@@ -40,6 +40,18 @@ class Settings(BaseSettings):
         description="Identifying User-Agent for SEC EDGAR requests (mandatory)",
     )
 
+    # Watchlist of tickers we poll for prices, earnings, 8-Ks. SPY is mandatory —
+    # it's the baseline for excess-return calculations in the validator (Milestone 6).
+    default_tickers: str = Field(
+        default="NVDA,TSLA,AAPL,MSFT,GOOGL,META,AMZN,SPY,QQQ",
+        description="Comma-separated ticker list",
+    )
+
+    @property
+    def watchlist(self) -> list[str]:
+        """Parsed watchlist as a list of uppercase tickers, whitespace-trimmed."""
+        return [t.strip().upper() for t in self.default_tickers.split(",") if t.strip()]
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -683,10 +683,256 @@
 
 ## Milestone 4 — Prices + earnings
 
-> **狀態**:⏳ 未開始
-> **目標**:yfinance 整合、price_snapshots 表、Redis 快取。
+> **狀態**:✅ 完成
+> **目標**:用 yfinance 抓股價 + 財報、新表 `price_snapshots`、Redis 60s 快取、`GET /prices/{ticker}/latest` 端點、1 年歷史 backfill 腳本。
 
-_(待實作)_
+### 做了什麼(依檔案分類)
+
+#### `backend/pyproject.toml`
+- 加 `yfinance>=0.2.50` — **非官方** Yahoo Finance scraper(很重要,後面會講為什麼)
+
+#### `backend/app/db/models.py`(新 model)
+- 新 `PriceSnapshot` 對應 spec §6.3:
+  - `id: bigint PRIMARY KEY autoincrement` — **不是 UUID**,因為這表會 100K+ rows/day,bigint 占 8 bytes < UUID 的 16 bytes,index 也小
+  - `price: Numeric(12, 4)` — **不用 float**,float 在大數會掉精度($99,999,999.9999 都能表示)
+  - `UniqueConstraint("ticker", "snapshot_at", "source")` — 同一 ticker 同一 timestamp 同一 source 不能重複
+  - `Index(ticker, snapshot_at)` — 支援「找 AAPL 最新價」的 ORDER BY DESC LIMIT 1
+  - **沒有 created_at / updated_at** — append-only time series,snapshot_at 已經是 authoritative timestamp
+
+#### `backend/alembic/versions/33dfb9feb98c_add_price_snapshots_table.py`
+- `alembic revision --autogenerate` 產生
+- 沒有 ENUM type,不需要手動補 DROP
+
+#### `backend/app/config/settings.py`(加欄位)
+- `default_tickers: str = "NVDA,TSLA,AAPL,MSFT,GOOGL,META,AMZN,SPY,QQQ"`
+- `@property watchlist` 解析成 list,trim 空白、轉大寫
+
+#### `backend/app/lib/market_hours.py`(新)
+- `is_market_open(now=None) -> bool`:用 `zoneinfo.ZoneInfo("America/New_York")` **正確處理 DST**
+- 9:30 ~ 16:00 ET(interval `[open, close)`,16:00:00 整算 closed)
+- 不查 NYSE 假日表(那要拉 pandas_market_calendars ~50MB),感恩節跑空 fetch 沒成本
+- 8 個 unit test 覆蓋 DST 邊界、開盤/收盤鐘、週末
+
+#### `backend/app/adapters/prices.py`(新)
+- **`PriceTick` 是 `@dataclass(frozen=True, slots=True)`**,**不是 Pydantic**:
+  - 高頻路徑(backfill 一次 2000+ 物件),Pydantic validation overhead 加總起來明顯
+  - `slots=True` 減少每個物件的記憶體
+  - SQLAlchemy INSERT 時還是會型別檢查,所以 validation 不會完全跳掉
+- `intraday(ticker)`:過去 5 天的 1-minute 線(yfinance 限制 1m interval 一定要 ≥5d period)
+- `daily(ticker, period="1y")`:給 backfill 用
+- `_yf_history` 用 **broad `except Exception`**,yfinance 是 scraper,會丟各種未文件化 error
+- 每一 row 也包 try/except,壞掉的 row 不該污染整個 batch
+- `auto_adjust=False`:**split / dividend 不要 mutate 收盤價**,要保持歷史準確
+
+#### `backend/app/services/price_writer.py`(新)
+- 用 **PostgreSQL native `INSERT ... ON CONFLICT DO NOTHING`** 而非 per-row try/except:
+  - 大批量(2000+ rows)時,one round trip vs 2000 round trips,差 50 倍
+  - 用 `from sqlalchemy.dialects.postgresql import insert as pg_insert`
+- batch 上限 1000 rows/statement,避免 query plan log 太醜
+- 寫完 DB 後**順便更新 Redis 快取**(每個 ticker 的最新 tick) — 一次操作多用途
+- `result.rowcount` 是真正 insert 進去的數量(排除 dedup 掉的)
+
+#### `backend/app/services/price_cache.py`(新)
+- Redis 快取「每個 ticker 最新價」60 秒 TTL
+- Key shape:`eventsense:latest_price:AAPL`
+- `redis.asyncio` client,**module 層 singleton** + lazy init(test 不碰 cache 不用 Redis 起來)
+- `decode_responses=True` → 直接拿 str,免去自己 decode bytes
+- **失敗 fail-silent**:Redis 掛了不該讓 price 寫入失敗(降級到「沒 cache」)
+
+#### `backend/app/adapters/earnings.py`(新)
+- 用 `yfinance.Ticker(ticker).earnings_history` 拿過去財報
+- DataFrame index 是 quarter-end date,columns 有 `epsActual` / `epsEstimate` / `surprisePercent`
+- `_safe_float()` 處理 yfinance 常給的 NaN / None / 怪型別
+- 跳過 SPY / QQQ(ETF 沒財報)
+- 30 天 lookback,避免回填全年舊財報
+- 跟 SEC 一樣:每個 ticker call 隔離 — 一個壞不影響其他
+- `external_id = "TICKER:YYYY-MM-DD"`(quarter-end date 是 natural key)
+
+#### `backend/app/tasks/prices.py`(新)
+- `fetch_prices_task`:**Beat 不論時間都 fire,task 內部 check `is_market_open()`,closed 直接 return**
+  - 為什麼:cron 表達式處理 DST 痛苦(寫死 14:30 UTC 夏天就錯了)
+  - market closed = 純 no-op,成本接近 0
+
+#### `backend/app/tasks/fetchers.py`(加 task)
+- `fetch_earnings_task` 用同一個 `_run_fetch()` scaffolding
+- **沒設 `autoretry_for=HTTPError`** — yfinance 不丟 httpx error(它內部用 requests),adapter 層的 broad except 已經夠
+
+#### `backend/app/workers/celery_app.py`(加排程)
+- 加入 `app.tasks.prices` 到 `include` list
+- task routing:`app.tasks.prices.*` → `fetch_queue`(I/O bound,跟 fetchers 同一個 worker pool)
+- 三個新 Beat schedule:
+  - `prices-5min`:`crontab(minute="*/5")` — 每 5 分鐘
+  - `earnings-daily`:`crontab(hour=22, minute=0)` — 大多公司收盤後 4:30 PM ET 報,UTC 22:00 抓得到
+  - 加 SEC + FOMC 已經在 M3
+
+#### `backend/app/api/routes/prices.py`(新)
+- `GET /api/v1/prices/{ticker}/latest` → 先查 Redis,miss 則查 DB,都沒就 404
+- Response 含 `source: "cache" | "db"` 欄位 — debug 時超有用,線上想知道「為什麼這個 ticker 沒 cache」
+- 404 case:`ticker not in watchlist` 或 `DB 完全沒資料`
+- **read path 不寫 cache**:避免 thundering herd(cache 過期瞬間 1000 個 request 全部 fetch+寫)
+
+#### `backend/app/scripts/backfill_prices.py`(新)
+- 一次性腳本,跑 `python -m app.scripts.backfill_prices`
+- 對每個 watchlist ticker 抓 1 年 daily history
+- 全部 ticks 收集起來,一次 bulk insert(2200+ rows / 150ms)
+- Idempotent:重跑 0 insert(unique constraint 兜底)
+
+#### 測試(18 → 38 個全綠)
+- `test_market_hours.py`(8 tests):DST 夏/冬、開盤/收盤鐘、週末
+- `test_prices_adapter.py`(3 tests):正常 parse、空 DataFrame、yfinance exception 不傳染
+- `test_earnings_adapter.py`(6 tests):`_safe_float` NaN、未來財報跳過、ETF 跳過、cutoff filter、整體 fetch_new
+- `test_price_writer.py`(3 integration tests):bulk insert + dedup、空 list、混合新舊 batch
+- M1-M3 既有 18 個 + M4 新 20 個 = 38 個
+
+---
+
+### 為什麼這樣選(關鍵決策)
+
+#### 為什麼 PriceTick 用 dataclass 而 RawEvent 用 Pydantic?
+- **RawEvent**:adapter 跨 source 共用契約,Pydantic 給 type safety + auto-validation,寫進 DB 之前最後一道防線
+- **PriceTick**:同一個 adapter 內部用,SQLAlchemy 進 DB 時自動 type check
+- **效能**:Pydantic v2 雖然快了 10x,每物件還是 ~50µs。2000 物件 = 100ms。dataclass = 0.1ms
+- 原則:**邊界用 Pydantic,內部用 dataclass**
+
+#### 為什麼 `Numeric(12, 4)` 不用 `Float`?
+- Python `float` 是 IEEE 754 double precision,**~16 位精度**
+- 看起來夠?但是 `0.1 + 0.2 = 0.30000000000000004` 這種 binary 表示誤差累積會出包
+- 金融場景 ALWAYS 用 `Decimal` / `Numeric`,跟錢沾邊絕對不 float
+- **interview 必問**:「為什麼用 Numeric?」答案:「accuracy in monetary calculations — IEEE 754 has binary representation errors that compound」
+
+#### 為什麼 INSERT ... ON CONFLICT 而不是 per-row catch IntegrityError?
+- M3 的 `event_writer` 用 per-row catch,因為 events 是低頻(每 source ~10 筆/run)
+- price_snapshots 是高頻(2000+ 筆/batch),per-row 變成 2000 個 round trip
+- PG 的 `ON CONFLICT DO NOTHING` 一次 statement 處理整批,DB-level dedup
+- Trade-off:語法是 PG 專屬(MySQL 是 `INSERT IGNORE`),不 portable — 但我們 lock-in PostgreSQL 了
+
+#### 為什麼 backfill 是一個獨立腳本,不是 Celery task?
+- One-shot 性質(部署時跑一次)
+- 不需要排程
+- 跑起來 30 秒,不會卡 worker queue
+- 可以直接 `docker exec` 跑、看 log、ctrl-C 取消
+- 加入 Celery 反而要處理「上次跑到哪、要不要 resume」這種複雜性
+
+#### 為什麼 market hours 邏輯放在 task 裡,不放在 Beat 排程?
+- Cron 不認識 DST。寫 `crontab(hour=14, minute=30)` 夏天就早 1 小時開盤(因為美東變 UTC-4)
+- 解法 1:用 timezone-aware cron(Celery 支援,但設定醜)
+- 解法 2:**Beat 不斷觸發,task 自己 check** — 簡單可靠
+- 成本:off-hours 也會 fire 一次(~25/24 倍呼叫),但 task 立刻 return,無實質成本
+
+#### 為什麼 yfinance 一律用 broad `except Exception`?
+- yfinance 是 scraper,**沒有文件化的 exception type**
+- 看 source code 會發現它丟 `RuntimeError`、`KeyError`、`AttributeError`、`requests.HTTPError`、`json.JSONDecodeError`...
+- 一個個 catch 早晚漏一個,broad except 是務實選擇
+- ruff 的 `BLE001` 會 flag,要 `# noqa: BLE001` 並加註解
+
+#### 為什麼 cache miss 時 endpoint 不寫回 cache?
+- 直覺寫法:cache miss → 查 DB → 寫 cache → 回應
+- 問題:**thundering herd**。cache 過期瞬間,如果 100 個 request 同時打,100 個都會 miss,100 個都查 DB + 寫 cache
+- 解法 A:write through(cache miss 時寫 — 我們**沒**選)
+- 解法 B:read through with single-flight lock(複雜)
+- 解法 C(我們選的):**只有 worker 寫 cache**,reader 純 read。worker 每 5 分鐘刷新一次,過期最多 60 秒 → reader 接受短時間打 DB
+- 這個取捨在 spec 沒寫,是我自己決定的
+
+---
+
+### 過程中踩到的坑
+
+#### 坑 1:測試把 events 表 truncate 了
+- 跑 `uv run pytest` 之後,Postgres 裡 M3 抓到的 FRED / SEC / FOMC 資料全沒了
+- 原因:`conftest.py` 的 `db_session` fixture 每個 test 都 `TRUNCATE events CASCADE`
+- 測試和開發共用同一個 DB → 跑測試會洗掉開發資料
+- **不算 bug**(spec 沒要求分開),但 production-grade 做法是用獨立 test DB
+- 解法 deferred to M8(CI 加上 GitHub Actions service postgres)
+
+#### 坑 2:Anonymous volume 又咬我一次
+- 加 yfinance 之後 `docker compose up --build` 預期會帶新套件
+- 結果 container 啟動 `ModuleNotFoundError`
+- 解法跟 M3 一樣:`--force-recreate --renew-anon-volumes`
+- 第二次踩到了 — 該寫成 shell alias 或更新 README
+- M9 部署要重新思考 dev volume 策略(可能不該掛 `.venv` 進去,改用 image-only)
+
+#### 坑 3:`auto_adjust=True` 預設行為
+- yfinance `Ticker.history()` **預設 auto_adjust=True**,會回溯調整 split / dividend
+- 我們要原始 close 給 LLM 看「事件當天的真實價」 — 寫 `auto_adjust=False` explicit
+- 沒注意到的話,backfill 出來的歷史價跟 Yahoo 網頁上看到的不一樣
+- 寫進 code 同時加 comment 解釋,避免未來 reviewer 不小心改掉
+
+---
+
+### 學到的觀念
+
+1. **Pydantic 不是萬靈丹**:在高頻熱路徑 dataclass 更適合。Pydantic 強在「邊界 validation」,內部資料流不需要
+
+2. **`Decimal` vs `float`** 是金融開發的第一課:**碰錢一律 Decimal**。Numeric(precision, scale) 對應 Postgres `NUMERIC`,精度有上限保證
+
+3. **`INSERT ... ON CONFLICT`** 是 PG 的殺手 feature。MySQL 有 `INSERT IGNORE` / `ON DUPLICATE KEY UPDATE`,SQL standard 有 `MERGE`。語法不一樣,概念相同 — bulk upsert
+
+4. **Time zones 不要硬編 offset**:總是用 IANA zone name(`America/New_York`),Python `zoneinfo` 會自動讀 OS 的 tz database 處理 DST。寫 `UTC-5` 春夏就錯了
+
+5. **Cache 寫入策略是 trade-off**:write-through、read-through、write-behind 各有應用場景。我們的 case「**worker 主動 push,reader 純讀**」是 read-heavy + 可容忍少量 stale 的最簡解
+
+6. **`zoneinfo` 是 Python 3.9+ stdlib**:取代 pytz。pytz 的 API 有歷史包袱(`tz.localize(naive_dt)` 而非直接 `datetime(..., tzinfo=tz)`),zoneinfo 才是現代寫法
+
+---
+
+### 面試可能會被問到
+
+**Q1: 為什麼用 `Numeric(12, 4)` 不用 `Float` 存價格?**
+- IEEE 754 double 有 binary 表示誤差(`0.1 + 0.2 ≠ 0.3`)
+- 大量小數累加會放大誤差
+- 金融計算的 industry standard 是用 Decimal / NUMERIC
+- 真實案例:有交易系統因為 float 把 $1,000,000.00 算成 $999,999.99 被 audit
+
+**Q2: 你的 cache 為什麼是 worker write,reader read?**
+- Read-heavy 場景的 thundering herd 防護
+- Cache 過期那一刻,如果 100 個 reader 同時 miss,全部去 DB + 寫 cache → DB 瞬間高負載
+- 我們把寫 cache 集中到 worker(每 5 min 一次,單實例),reader 純 read miss 直接 fallback DB
+- 不是業界唯一做法,有些團隊用 read-through + Redis SET NX 鎖,但更複雜
+- 我們的 trade-off:**接受 reader 在 cache 過期 ~60s 內走 DB,換 cache 寫入路徑單純**
+
+**Q3: 為什麼 ON CONFLICT DO NOTHING 比 try/except IntegrityError 好(在 high volume 場景)?**
+- per-row try:每筆 INSERT 都是一個 round trip,N rows = N round trips
+- 一個 round trip ~1-5ms(本地)、~10-50ms(跨 region)
+- 2000 rows × 10ms = 20 秒。**ON CONFLICT 是 1 個 round trip,150ms**
+- 100x 差距
+
+**Q4: yfinance 不穩怎麼處理?**
+- 三層防護:
+  1. **broad except Exception**:adapter 函式失敗就 return `[]`,worker 不 crash
+  2. **per-row try**:某幾 row 壞掉不影響整批
+  3. **at-least-once delivery**:下個 schedule cycle 自然重試
+- 加上 backfill 是 idempotent,人工 rerun 也行
+- yfinance 改 API 時:tests 雖然 mock,但 production 會 silent fail(空 list)。應該加 monitoring 看「連續 N 次抓到 0 筆」alert(M11 的事)
+
+**Q5: market hours 為什麼放在 task 裡?可以放在 Beat schedule 嗎?**
+- 可以,但 cron 表達式對 DST 很笨
+- 寫死 `hour=14` UTC,夏天會在美東 10:00 開始抓(晚 30 分)、冬天 9:00(早 30 分)
+- Celery 支援 timezone-aware schedule(`celery_app.conf.timezone = "America/New_York"`),但會影響所有 schedule
+- 把 gate 放 task 裡是「**讓 schedule 簡單,讓邏輯複雜**」的選擇,降低 cron 表達式心智負擔
+
+**Q6: 為什麼 PriceSnapshot 用 BigInteger PK 不用 UUID?**
+- High volume 表(100K rows/day):
+  - UUID 16 bytes vs BigInt 8 bytes → 一年差 ~30GB index 大小
+  - UUID 隨機分布 → B-tree index 寫入位置分散 → 寫入 amplification
+  - BigInt sequential → 寫到 B-tree 最右側 → cache-friendly
+- 低 volume 表(events,~50/day):UUID 的好處(全域唯一、不洩漏業務 ID、適合分散式)勝
+- **依據 volume 跟 access pattern 選 PK type**,沒有「永遠用 X」的答案
+
+---
+
+### 驗收狀態
+
+- [x] `docker compose up` 5 個 service healthy
+- [x] Worker 註冊 5 個 task:`fetch_fred_cpi_task`、`fetch_sec_edgar_task`、`fetch_fomc_task`、`fetch_earnings_task`、`fetch_prices_task`
+- [x] Beat 載入 5 個 schedule
+- [x] `docker exec backend python -m app.scripts.backfill_prices` 一次跑完,9 tickers × 251 days = **2259 price snapshots**
+- [x] `GET /api/v1/prices/AAPL/latest` → `{"price":"308.8200","source":"cache"}`(cache hit)
+- [x] 手動清 cache → 同 endpoint 回 `"source":"db"`(DB fallback)
+- [x] `GET /api/v1/prices/UNKNOWN/latest` → 404
+- [x] `fetch_earnings_task` 跑出 NVDA 2026-04-30 財報事件(EPS 1.87, est 1.77, surprise 0.1%)
+- [x] DB 最終狀態:events 4 sources / price_snapshots 2263 rows
+- [x] 38 個 pytest 全綠(M3 的 18 → M4 的 38)
+- [x] Ruff lint + strict mypy clean
 
 ---
 

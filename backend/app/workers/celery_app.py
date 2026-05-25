@@ -36,7 +36,7 @@ celery_app = Celery(
     broker=settings.redis_url,
     backend=settings.redis_url,
     # Auto-discover tasks in these modules so we don't have to import them by hand.
-    include=["app.tasks.fetchers"],
+    include=["app.tasks.fetchers", "app.tasks.prices"],
 )
 
 celery_app.conf.update(
@@ -58,6 +58,7 @@ celery_app.conf.update(
 # Route tasks to dedicated queues so a slow LLM call doesn't block a quick FRED fetch.
 celery_app.conf.task_routes = {
     "app.tasks.fetchers.*": {"queue": "fetch_queue"},
+    "app.tasks.prices.*": {"queue": "fetch_queue"},  # prices are I/O-bound like fetchers
     "app.tasks.analyzers.*": {"queue": "analyze_queue"},
     "app.tasks.validators.*": {"queue": "validate_queue"},
 }
@@ -84,5 +85,17 @@ celery_app.conf.beat_schedule = {
         # poll is enough; spec §7.3 also calls for tighter cadence on known decision
         # days but that's left for a future milestone.
         "schedule": crontab(hour=14, minute=30),  # 2:30 PM UTC
+    },
+    "earnings-daily": {
+        "task": "app.tasks.fetchers.fetch_earnings_task",
+        # Most earnings drop after market close (~4:30 PM ET = 20:30 UTC winter / 21:30 summer).
+        # Run at 22:00 UTC to comfortably catch both, with idempotent dedup.
+        "schedule": crontab(hour=22, minute=0),
+    },
+    "prices-5min": {
+        "task": "app.tasks.prices.fetch_prices_task",
+        # Fires every 5 min unconditionally; the task itself early-returns when
+        # market is closed (handling DST without cron gymnastics).
+        "schedule": crontab(minute="*/5"),
     },
 }

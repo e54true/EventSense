@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 import structlog
 
-from app.adapters import fomc, fred, sec_edgar
+from app.adapters import earnings, fomc, fred, sec_edgar
 from app.db.session import transient_session
 from app.schemas.raw_event import RawEvent
 from app.services.event_writer import persist_events
@@ -65,3 +65,11 @@ def fetch_sec_edgar_task() -> dict[str, int]:
 @celery_app.task(name="app.tasks.fetchers.fetch_fomc_task", **_common_task_kwargs)
 def fetch_fomc_task() -> dict[str, int]:
     return _run_fetch("fomc", fomc.fetch_new)
+
+
+# Earnings doesn't get autoretry_for=HTTPError because yfinance never raises
+# httpx errors (it uses requests internally). Adapter-level broad except is
+# enough — task failure just means "no new earnings this run", not user-visible.
+@celery_app.task(name="app.tasks.fetchers.fetch_earnings_task")
+def fetch_earnings_task() -> dict[str, int]:
+    return _run_fetch("earnings", earnings.fetch_new)
