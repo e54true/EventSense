@@ -14,6 +14,12 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from app.config.settings import get_settings
 from app.db.models import Event, EventSource, EventStatus
@@ -26,6 +32,14 @@ FRED_API_BASE = "https://api.stlouisfed.org/fred"
 CPI_SERIES_ID = "CPIAUCSL"
 
 
+# Inner-level retry for transient HTTP failures within a single task invocation.
+# Outer Celery autoretry catches the rare case where all 4 attempts here fail.
+@retry(
+    retry=retry_if_exception_type(httpx.HTTPError),
+    stop=stop_after_attempt(4),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    reraise=True,
+)
 async def _fetch_series_observations(series_id: str, limit: int = 12) -> list[dict[str, Any]]:
     """Fetch the most recent N observations for a FRED series.
 

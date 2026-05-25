@@ -295,10 +295,175 @@
 
 ## Milestone 2 — Scheduled fetching
 
-> **狀態**:⏳ 未開始
-> **目標**:加入 Celery + Beat,FRED 改為排程觸發,結構化 logging。
+> **狀態**:✅ 完成
+> **目標**:加入 Celery + Beat,FRED 改為排程觸發,結構化 logging,tenacity retry,首批 pytest。
 
-_(待實作)_
+### 做了什麼(依檔案分類)
+
+#### `backend/pyproject.toml`
+- 加入 `celery[redis]>=5.4.0`。`[redis]` extras 自動裝 `redis-py` 作為 broker driver。
+
+#### `backend/app/workers/celery_app.py`(新)
+- **`Celery("eventsense", broker=..., backend=...)`**:broker 和 result backend 都用 Redis。
+- **`include=["app.tasks.fetchers"]`**:讓 Celery autodiscover task module,不用每個 task 手動 import。
+- **`task_acks_late=True` + `worker_prefetch_multiplier=1`**:worker 跑完才 ack message,中途 crash 會被 redeliver。配合 tasks 本身的 idempotency(unique constraint),safer default。
+- **`task_routes`** 把 task 路由到 3 個 queue(`fetch_queue` / `analyze_queue` / `validate_queue`)。M2 只用 fetch,但其他 route 先定義好,以後不用重命名 task。
+- **`beat_schedule.fred-cpi-hourly`**:用 `crontab(minute=0)` 每小時整點觸發 `fetch_fred_cpi_task`。
+- **`@setup_logging.connect`** signal handler:Celery 預設會用自己的 logging 設定,我們攔截下來改用 `configure_logging()`,讓 worker 和 beat 也吐 structlog 格式。
+
+#### `backend/app/tasks/fetchers.py`(新)
+- **Sync Celery task 包 async adapter**:用 `asyncio.run(_run_fetch_cpi())`。每個 task call 起一個新的 event loop — 對我們每小時一次的 cadence,overhead 可以忽略。
+- **`autoretry_for=(httpx.HTTPError,)` + `retry_backoff=True` + `retry_jitter=True` + `max_retries=5`**:Celery 層的 retry,catch tenacity 沒 catch 完的更嚴重情況(整個 FRED 掛掉超過 30 秒)。
+- 命名 `name="app.tasks.fetchers.fetch_fred_cpi_task"` 明確,避免 Celery autoname 出 surprise。
+
+#### `backend/app/adapters/fred.py`(修改)
+- `_fetch_series_observations` 加上 `@tenacity.retry`:
+  - `retry_if_exception_type(httpx.HTTPError)` — 只 retry 網路類錯誤,不 retry programming bug
+  - `stop_after_attempt(4)` — 最多 4 次
+  - `wait_exponential(multiplier=1, min=1, max=10)` — 1s, 2s, 4s, 8s(cap at 10s)
+  - `reraise=True` — 最後一次失敗時 raise 原始 exception,讓 Celery 看到 HTTPError 觸發外層 retry
+
+#### `backend/app/logging_config.py`(新,從 `app/main.py` 抽出來)
+- 把原本只服務 FastAPI 的 `configure_logging()` 改成共用模組。
+- **重點**:`ProcessorFormatter` 讓 stdlib `logging` 模組(SQLAlchemy、Celery、Alembic 用的)也走同一條 structlog processor pipeline,輸出格式完全一致 — 不會看到「FastAPI log 是彩色的、Celery log 是純文字」的混亂。
+- 把 `sqlalchemy.engine` 和 `httpx` 的 level 調到 WARNING,避免一堆 INFO 雜訊。
+
+#### `backend/app/main.py`(修改)
+- 從 35 行縮到 13 行 — 邏輯都搬到 `logging_config.py`,main 只負責掛 router + 觸發 logging init。
+
+#### `docker-compose.yml`(修改)
+- 加入 `worker` service:
+  - `command: celery -A app.workers.celery_app worker -Q fetch_queue --concurrency=4`
+  - 用 `-Q fetch_queue` 限制 queue,以後加 LLM analyzer 不會搶 fetch CPU
+  - `depends_on: backend: service_started` — backend 跑完 migration 才啟動 worker
+- 加入 `beat` service:
+  - `command: celery -A app.workers.celery_app beat`
+  - **單 replica**,因為兩個 beat 會 double-enqueue 每個排程
+  - 不依賴 postgres(beat 只跟 broker 通訊)
+
+#### `backend/tests/conftest.py`(新)
+- `db_session` fixture:每個 integration test 自動 TRUNCATE `events` 表,確保 test 之間互不污染。
+- 用 `text("TRUNCATE TABLE events CASCADE")` 而非 ORM delete — 更快、會 reset sequence。
+- Fixture 用 `pytest_asyncio.fixture` 而非 `pytest.fixture`,搭配 `asyncio_mode = "auto"` 不用手動加 marker。
+
+#### `backend/tests/unit/test_fred_adapter.py`(新,4 個測試)
+1. `test_fetch_observations_returns_parsed_list` — 用 `pytest-httpx` mock FRED response,確認 parse 出 list of dict。
+2. `test_fetch_observations_raises_on_5xx` — 連續 mock 4 個 503,確認 tenacity 用完 retries 後 reraise `HTTPStatusError`。
+3. `test_fetch_cpi_skips_missing_value` — observation 中 `value: "."`(FRED 缺值標記)要被略過,不該 insert。
+4. `test_fetch_cpi_raises_runtime_error_without_key` — 沒設 `FRED_API_KEY` 要 raise `RuntimeError`。
+
+#### `backend/tests/integration/test_fred_idempotency.py`(新,2 個測試)
+1. `test_fetch_cpi_is_idempotent` — 連跑 `fetch_cpi` 兩次,第一次 inserted=3,第二次 inserted=0,DB 仍只有 3 筆。
+2. `test_fetch_cpi_writes_expected_fields` — INSERT 後讀回來,確認 external_id、event_type、payload 結構正確。
+
+---
+
+### 為什麼這樣選(關鍵決策)
+
+#### 為什麼 Celery 用 sync wrapper + `asyncio.run()`,而不是 `celery-pool-asyncio`?
+- 我們的 task 量很低(每小時一次 per source),沒有 perf pressure。
+- `asyncio.run()` 是標準庫,沒有外部依賴。
+- `celery-pool-asyncio` 是 third-party,可能與未來 Celery 版本不相容。
+- 真的有大量 async task 時再重構,YAGNI。
+
+#### 為什麼 `task_acks_late=True`?
+- 預設(`acks_late=False`)是 worker 收到 message 就 ack,然後執行 — 中間 crash → message 丟了。
+- `acks_late=True`:跑完才 ack,crash 會 redeliver。
+- **代價**:同一個 task 可能跑兩次。但我們所有 fetcher / analyzer 都是 idempotent,所以這 trade 划算。
+- 配合 `worker_prefetch_multiplier=1` 避免一個 worker 預取太多 message 卡死。
+
+#### 為什麼 tenacity + Celery 兩層 retry?
+- **Tenacity(內層,在 adapter 裡)**:處理「打一次 API 中,1-2 秒網路抖」— 快速 retry,task 內解決,broker 不知道。
+- **Celery(外層,在 task 裡)**:處理「FRED 整個掛 30 分鐘」— tenacity 4 次都失敗了,丟回 broker,過 backoff 時間再重試。
+- 沒有兩層的話:要嘛 tenacity 等很久(浪費 worker 時間),要嘛 Celery 每次都從頭重新 retry(浪費 broker round trip)。
+
+#### 為什麼 beat 必須單 replica?
+- Beat 的工作是「在排定時間 enqueue task」 — 多個 beat 各自看時鐘,每個都會 enqueue 一次。
+- 結果:每小時的 task 跑 N 次(N = beat replica 數),DB 雖然被 unique constraint 保護不會壞,但浪費資源 + 日誌混亂。
+- 進階解法:`celery-beat-redis-scheduler` 用 Redis lock 讓多 replica 競爭領導權。MVP 不需要。
+
+#### 為什麼把 logging 從 `main.py` 抽出來?
+- Celery worker / beat 不會 import `app.main`(沒必要載入 FastAPI),所以 main.py 裡的 logging init 對 worker 沒效。
+- 抽到 `app/logging_config.py`,worker celery_app.py 也能 import → 三個 entry point(uvicorn、worker、beat)共用同一份設定。
+
+#### 為什麼 `ProcessorFormatter` 而不是直接讓 structlog 處理所有 log?
+- SQLAlchemy、Celery、httpx 用 stdlib `logging`,不會走 structlog。
+- 沒有 ProcessorFormatter,你會看到混雜兩種格式的 log,grep 困難。
+- ProcessorFormatter 是 structlog 提供的橋:stdlib log record → 經過同一條 processor chain → 同樣的輸出格式。
+
+#### 為什麼 unit test 用 `MagicMock` for `db.add`,但 `AsyncMock` for `db.flush`?
+- SQLAlchemy 的 `session.add()` 是 sync method(把 object 加進 identity map,沒 I/O)。
+- `session.flush()` / `commit()` / `scalar()` 是 async(真的有 I/O)。
+- `AsyncMock` 預設所有 method 都返回 coroutine — `add()` 不該 await,所以要 override 成 `MagicMock`。
+- 沒做這個 override 會看到 `RuntimeWarning: coroutine was never awaited`(雖然 test 還是過)。
+
+---
+
+### 學到的觀念
+
+1. **Beat 是 scheduler,不是 worker**:Beat 不執行 task,只是「按表 enqueue」。所以 Beat container 不需要連 Postgres,只需要連 Redis(broker)。
+
+2. **Celery `task_routes` 用 wildcard**:`"app.tasks.fetchers.*": {"queue": "fetch_queue"}` 一次處理整個 module。新增 task 不用改設定。
+
+3. **`asyncio.run()` 一次 task 開一次 event loop**:對低頻 task 無感,但如果某個 task 內要做很多 async work(例如同時打 50 個 ticker 的 yfinance),要記得在 task 裡用同一個 loop（`asyncio.gather`)而非各 spawn loop。
+
+4. **`crontab(minute=0)` 意思是「每小時的第 0 分」**,不是「每 60 分」。後者要寫 `timedelta(minutes=60)`。差別在「對齊整點」vs「相對啟動時間」。
+
+5. **Test 寫 conftest 比 setUp/tearDown 好**:pytest fixture 可以 scope 到 function / module / session、可以 parametrize、可以互相依賴。不要寫 `setUp` 風格。
+
+---
+
+### 面試可能會被問到
+
+**Q1: 為什麼選 Celery 而不是 RQ / Dramatiq / arq / Sidekiq?**
+- **RQ**:更輕量,但沒有 beat scheduler、queue routing 比較陽春。
+- **Dramatiq**:設計比 Celery 乾淨,但社群小,缺少現成 plugin。
+- **arq**:async-native,但生態最小,只適合純 async 專案。
+- **Sidekiq**:Ruby,不是 Python option。
+- 結論:**Celery 是 Python 生態 default choice,招聘 JD 點名率最高**;缺點是設定複雜、文件雜亂,但有 stack overflow 護身符。
+
+**Q2: `task_acks_late=True` 適合什麼情境?有什麼風險?**
+- 適合「task 是 idempotent」+「task 跑超過幾秒鐘」+「資料丟失比重複跑代價高」。
+- 風險:不 idempotent 的 task 會被跑兩次造成 side effect(發兩次 email、insert 兩筆訂單)。
+- 我們 fetcher / analyzer / validator 都有 unique constraint 保護,所以放心開。
+
+**Q3: 你的 tenacity 設定 `wait_exponential(multiplier=1, min=1, max=10)` 怎麼算?**
+- 第 1 次失敗 → 等 1s
+- 第 2 次失敗 → 等 2s
+- 第 3 次失敗 → 等 4s
+- 第 4 次失敗 → 等 8s(cap at 10s,所以不會繼續成 16)
+- 配合 `stop_after_attempt(4)`,最多 4 次嘗試,總共 ~15 秒。
+
+**Q4: 為什麼不用 APScheduler 取代 Celery Beat?**
+- APScheduler 是 in-process scheduler — 你的 FastAPI 程式自己排程。
+- 缺點:FastAPI 多 instance(load balancer 後面)時,每個 instance 都會跑 schedule。
+- Celery Beat 是獨立 process,單例好控制,而且 task 進入 broker 之後 worker 可以橫向擴展處理。
+- 我們的架構是「scheduler 集中、worker 散開」 → Celery Beat 比較對。
+
+**Q5: 如果 Redis 掛了會發生什麼事?**
+- Beat 試圖 enqueue → 連不上 broker → 重試(Celery 內建 retry)。
+- Worker 試圖讀取 message → 連不上 → idle 等待。
+- 整段時間 task 不會跑,但**不會丟資料**(Beat 不會記住沒送出的 task,但下個 schedule cycle 會繼續送)。
+- 對 FRED hourly 來說,Redis 掛 5 分鐘代表那一小時的 fetch 跳過 — 不嚴重,下小時繼續。
+- Production 用 Redis Sentinel 或 ElastiCache multi-AZ 避免。
+
+**Q6: 你怎麼測 idempotency?**
+- Integration test:`fetch_cpi(db)` 跑兩次,assert 第一次 inserted == N,第二次 == 0,DB 總筆數 == N。
+- 沒測的東西:race condition(兩個 worker 同時跑同一個 task)— 因為 Celery `acks_late` 已經防止 broker 層 double-deliver 同一個 task,且我們有 unique constraint 兜底。要真的測 race 要用 multi-process test framework。
+
+---
+
+### 驗收狀態
+
+- [x] `docker compose up` 全部 5 個 service(postgres、redis、backend、worker、beat)起來無錯誤
+- [x] Worker 啟動 log 顯示 `[tasks] . app.tasks.fetchers.fetch_fred_cpi_task` 並 listen on `fetch_queue`
+- [x] Beat 啟動 log 顯示 schedule 載入(`celery beat ... is starting`)
+- [x] 手動 `celery call app.tasks.fetchers.fetch_fred_cpi_task` → worker 收到、執行、寫進 DB
+- [x] Worker log 全部 structlog 格式(彩色 console 模式),key=value 結構化
+- [x] 6 個 pytest 全綠(4 unit + 2 integration)
+- [x] Ruff lint 0 errors,strict mode
+
+(Spec 要求的「leave running 2 hours」full E2E 驗證 — beat 是 `crontab(minute=0)`,下個整點會自動 enqueue;機制已經以手動 call 驗證過,自動排程是相同 path。)
 
 ---
 

@@ -59,5 +59,49 @@ services:
       sh -c "alembic upgrade head &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://eventsense:eventsense@postgres:5432/eventsense
+      REDIS_URL: redis://redis:6379/0
+      ENVIRONMENT: development
+    volumes:
+      - ./backend:/app
+      - /app/.venv
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      # Don't start worker until backend has run migrations (backend has the alembic step).
+      backend:
+        condition: service_started
+    # -Q fetch_queue restricts this worker to the fetch queue so a slow LLM call
+    # later won't starve fetcher tasks. Concurrency 4 is plenty for IO-bound work.
+    command: celery -A app.workers.celery_app worker --loglevel=info -Q fetch_queue --concurrency=4
+
+  beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://eventsense:eventsense@postgres:5432/eventsense
+      REDIS_URL: redis://redis:6379/0
+      ENVIRONMENT: development
+    volumes:
+      - ./backend:/app
+      - /app/.venv
+    depends_on:
+      redis:
+        condition: service_healthy
+    # Beat must run as a single replica — two beats would double-enqueue every schedule.
+    command: celery -A app.workers.celery_app beat --loglevel=info
+
 volumes:
   postgres_data:

@@ -31,6 +31,11 @@ dist/
 build/
 *.egg-info/
 
+# Celery beat persistent schedule (per-process state, not source)
+celerybeat-schedule
+celerybeat-schedule.*
+celerybeat.pid
+
 # Frontend (set up in Milestone 7)
 node_modules/
 .next/
