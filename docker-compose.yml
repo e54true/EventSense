@@ -1,0 +1,63 @@
+# Local dev stack: PostgreSQL + Redis + FastAPI with hot reload.
+# Production stack will live in docker-compose.prod.yml (Milestone 9+).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: eventsense
+      POSTGRES_PASSWORD: eventsense
+      POSTGRES_DB: eventsense
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eventsense"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    # Load secrets / API keys from backend/.env (FRED_API_KEY etc).
+    env_file:
+      - ./backend/.env
+    # These override .env values — inside the compose network, postgres/redis are
+    # hostnames (not localhost as .env assumes for local dev).
+    environment:
+      DATABASE_URL: postgresql+asyncpg://eventsense:eventsense@postgres:5432/eventsense
+      REDIS_URL: redis://redis:6379/0
+      ENVIRONMENT: development
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount source for hot reload — uvicorn --reload watches these paths.
+      # The .venv lives inside the container only (anonymous volume blocks host overlay).
+      - ./backend:/app
+      - /app/.venv
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # On startup: apply latest migrations, then run with hot reload.
+    # alembic/uvicorn come from /app/.venv/bin which is on PATH (set in Dockerfile).
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+
+volumes:
+  postgres_data:
