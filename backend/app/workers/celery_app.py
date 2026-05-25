@@ -72,4 +72,17 @@ celery_app.conf.beat_schedule = {
         # short-circuited by the (source, external_id) unique check.
         "schedule": crontab(minute=0),
     },
+    "sec-edgar-15min": {
+        "task": "app.tasks.fetchers.fetch_sec_edgar_task",
+        # Every 15 minutes per spec §7.2. We poll many tickers per run, but each call
+        # is cheap (~50KB JSON) and the (source, external_id) dedup makes repeats free.
+        "schedule": crontab(minute="*/15"),
+    },
+    "fomc-daily": {
+        "task": "app.tasks.fetchers.fetch_fomc_task",
+        # FOMC press releases are rare (~8 scheduled meetings/year + ad hoc). Daily
+        # poll is enough; spec §7.3 also calls for tighter cadence on known decision
+        # days but that's left for a future milestone.
+        "schedule": crontab(hour=14, minute=30),  # 2:30 PM UTC
+    },
 }

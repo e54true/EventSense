@@ -32,6 +32,13 @@ class Settings(BaseSettings):
 
     # External APIs
     fred_api_key: str = Field(default="", description="Required for FRED adapter")
+    # SEC mandates a custom User-Agent that identifies the caller. Format:
+    #   "Company Name email@example.com"
+    # See: https://www.sec.gov/os/accessing-edgar-data
+    sec_user_agent: str = Field(
+        default="EventSense dev@example.com",
+        description="Identifying User-Agent for SEC EDGAR requests (mandatory)",
+    )
 
 
 @lru_cache

@@ -469,10 +469,215 @@
 
 ## Milestone 3 — Multi-source ingestion
 
-> **狀態**:⏳ 未開始
-> **目標**:加 SEC EDGAR、FOMC adapter,統一 `RawEvent` schema。
+> **狀態**:✅ 完成
+> **目標**:加 SEC EDGAR、FOMC adapter,把所有 adapter 重構成共用 `RawEvent` 契約,寫 dedicated `event_writer` 服務,每個 source 各上 Beat 排程,完整測試覆蓋。
 
-_(待實作)_
+### 做了什麼(依檔案分類)
+
+#### 架構小重構 — `RawEvent` 統一契約
+
+之前 M1/M2 的 FRED adapter 直接寫 DB,M3 開始有 3 個 adapter 各做各的會重複大量程式碼。重構成「**adapter 只負責 fetch+parse,return `list[RawEvent]`;persist 由共用的 writer 處理**」。
+
+**`backend/app/schemas/raw_event.py`(新)**
+- Pydantic `RawEvent` model:`source` / `event_type` / `external_id` / `title` / `payload` / `affected_tickers` / `published_at`
+- `model_config = ConfigDict(frozen=True)` → immutable value object,adapter 創出來之後不能改
+- 跟 `Event` ORM model 結構幾乎一樣,但**不依賴 SQLAlchemy** → adapter 不用 import DB 任何東西
+
+**`backend/app/services/event_writer.py`(新)**
+- `persist_events(db, raw_events) -> int`:吃 `list[RawEvent]`,做 dedup + INSERT,回傳新增筆數
+- **是唯一寫 events 表的地方** — 未來要加 metrics、audit log,只改這裡
+- Dedup 邏輯就一份(pre-check SELECT + catch IntegrityError)
+
+#### `backend/app/adapters/fred.py`(重構)
+- 移除 `fetch_cpi(db: AsyncSession) -> int`(會寫 DB)
+- 新增 `fetch_new() -> list[RawEvent]`(純 fetch + parse)
+- 抽出 `_observation_to_raw_event(obs, series_id) -> RawEvent | None` — 純函式,好測試
+
+#### `backend/app/adapters/sec_edgar.py`(新)
+- 對每個 watchlist 公司打 `https://data.sec.gov/submissions/CIK{cik}.json`
+- **mandatory User-Agent**:SEC 強制要求(`SEC_USER_AGENT` env 必須含 email)— 沒 email 直接 raise RuntimeError
+- 篩選 `form == "8-K"` + 過去 14 天 (`LOOKBACK_DAYS`)
+- **SEC 回傳的是 column-oriented arrays**(`form: [...], filingDate: [...], accessionNumber: [...]`),要 zip 起來
+- **per-ticker rate limit**:`asyncio.sleep(0.15)` 控制在 ~6 req/sec(SEC 規定上限 10 req/sec)
+- **per-ticker 容錯**:某個 ticker 404 → log warning + continue,不讓壞 ticker 拖垮整個 run
+- 組裝 SEC archive URL 時要注意 accession number 從 `0000320193-26-000042` 變成 `000032019326000042`(去 dash)
+
+#### `backend/app/adapters/fomc.py`(新)
+- 抓 https://www.federalreserve.gov/feeds/press_monetary.xml (RSS 2.0)
+- 用 **`defusedxml`** 而非 stdlib `xml.etree.ElementTree`(等下解釋)
+- 用 `email.utils.parsedate_to_datetime` 解析 RFC 822 格式的 `<pubDate>`
+- `_is_fomc_statement(title)` 篩出真正的 FOMC 政策聲明(不是 Beige Book、不是 Powell 演講)
+- `external_id` 用 RSS item 的 `<link>` URL(每個 press release 都有唯一 URL)
+
+#### `backend/app/config/cik_map.py`(新)
+- 7 個 watchlist 大型科技股的 CIK 對應(AAPL/MSFT/GOOGL/AMZN/META/NVDA/TSLA)
+- 排除 SPY/QQQ — 它們是 ETF,filing 形式不同,不會有 8-K
+- CIK 是 SEC 永久 ID,合併 / 改名都不變 → 靜態 map 安全
+
+#### `backend/app/tasks/fetchers.py`(重寫)
+- 抽 `_run_fetch(source_name, fetch_fn)` 通用骨架 → 3 個 task 只是設定不同
+- `_common_task_kwargs` 集中 Celery retry 設定 → 不重複
+- 3 個 task:`fetch_fred_cpi_task`、`fetch_sec_edgar_task`、`fetch_fomc_task`
+- 每個 task 都 `asyncio.run(fetch_fn())` 拿 RawEvents,再 `asyncio.run(_fetch_and_persist(events))`
+
+#### `backend/app/workers/celery_app.py`(修改)
+- Beat schedule 加兩個:
+  - `sec-edgar-15min`:`crontab(minute="*/15")` 每 15 分鐘
+  - `fomc-daily`:`crontab(hour=14, minute=30)` 每天 UTC 14:30(美東 9:30 早盤前)
+
+#### `backend/app/db/session.py`(重構)— 修 critical bug
+- 原本只有一個 pooled engine 給所有人用
+- 加 `transient_session()` async context manager:**每次 call 開全新 engine + `NullPool`,用完 dispose**
+- 給 Celery task 用(避開「event loop 不同」bug,等下細說)
+- FastAPI 還是用 pooled engine(`AsyncSessionLocal`)
+
+#### `backend/pyproject.toml`(修改)
+- 加 `defusedxml>=0.7.1`
+
+#### `backend/.env` / `backend/.env.example`
+- 加 `SEC_USER_AGENT="EventSense your-email@example.com"`
+
+#### 測試(18 個全綠,M2 的 6 個 → M3 的 18 個)
+- `tests/unit/test_fred_adapter.py` 改寫:用新 `fetch_new()` 介面測 RawEvent 輸出
+- `tests/unit/test_sec_edgar_adapter.py`(新,5 tests):8-K filter、cutoff date 過期、accession URL 組裝、無 User-Agent 失敗、單一 ticker 失敗不影響其他
+- `tests/unit/test_fomc_adapter.py`(新,6 tests):title regex、RSS item parse、missing pubDate、整個 feed extraction
+- `tests/integration/test_event_writer.py`(新,3 tests):跨 source idempotency、`(source, external_id)` 複合 unique 行為、空 list no-op
+
+---
+
+### 為什麼這樣選(關鍵決策)
+
+#### 為什麼把 adapter 拆成 pure function?
+- 之前 `fetch_cpi(db: AsyncSession)` 把「打 API」「parse」「寫 DB」綁在一起 → 單元測試要 mock db,寫起來囉嗦
+- 拆開後 adapter 是純函式:`fetch_new() -> list[RawEvent]`
+  - 單元測試:只 mock httpx,不用碰 DB,測試快 100 倍
+  - Cross-source 邏輯(retry、log format)集中在 task 層
+  - 未來想用 adapter 做 backfill 腳本、CLI 工具 — 不用拖 DB 進來
+- 這個 pattern 叫 **"shy code"**:每個 module 認識的東西越少越好
+
+#### 為什麼用 `defusedxml` 而不是 stdlib `xml.etree`?
+- stdlib XML parser 對某些 attack 沒防(**XXE entity injection**、**billion laughs**)
+- 真實風險:Fed 不會打我們,但 ruff 的 S314 lint rule 還是會 flag → 養成習慣
+- `defusedxml` 是 1 個小套件、零維護成本、API 完全相容、面試講得出來
+- **interview talking point**:「我知道 XML parser 有安全考量,所以選 defusedxml」
+
+#### 為什麼 SEC adapter 用 `asyncio.sleep(0.15)` 而非真正的 rate limiter?
+- SEC 限制 10 req/sec per IP
+- 我們 7 個 ticker → 7 req/run,跑得快也撞不到
+- `sleep(0.15)` 簡單、無依賴、看程式碼直接懂
+- 真正用 token bucket 是「**未來加更多 ticker 時**」的事
+
+#### 為什麼 `LOOKBACK_DAYS = 14`?
+- 8-K 有 4 個工作天內申報的規範,所以 14 天足以涵蓋
+- 太短(例如 1 天):週末跑會錯過週五的 filing
+- 太長(例如 90 天):第一次跑會插入大量舊 filing,後續每次 poll 都掃一大堆已存在的(雖然 unique constraint 兜底,但浪費 API call)
+
+#### 為什麼 SEC `external_id` 用 accession number 而 FOMC 用 link URL?
+- SEC accession number 是 SEC 自己給每個 filing 的唯一 ID(格式 `CIK-YY-NNNNNN`),保證唯一
+- FOMC RSS 沒有明顯的 ID 欄位,但 `<link>` URL 是穩定的(release URL 一旦發出就不會改)
+- 原則:**用 source 自己的 ID,沒有就用最穩定的 stable URL/key**
+
+#### 為什麼 worker 需要 `transient_session()` 而 FastAPI 不用?
+- FastAPI 是長期跑的 process,只有一個 asyncio event loop,pool 安心重用 connection
+- Celery worker 每個 task 都 `asyncio.run()` → **每次都是全新 event loop**
+- asyncpg 的 connection 跟「**開它的 event loop**」綁定 — 換 loop 用會炸 `got Future attached to a different loop`
+- 解法:worker 用 `NullPool`(每次重新連線、用完就丟)— 不重用就沒 loop binding 問題
+- Trade-off:每個 task 多一次 TCP handshake (~5ms),對每小時跑一次的 task 完全不痛
+
+---
+
+### 過程中踩到的坑
+
+#### 坑 1:Anonymous volume 蓋掉 image 裡新裝的套件
+- 加了 `defusedxml`,跑 `docker compose up --build -d`,結果 worker `ModuleNotFoundError: No module named 'defusedxml'`
+- 原因:`/app/.venv` 用 anonymous volume 蓋在 bind mount 上(M1 為了 hot reload 設的)— 但 anonymous volume 也會跨 container 重建保留
+- 新 build 的 image 有 defusedxml,但 container 啟動時舊的 anonymous volume 蓋回去
+- 修法:`docker compose up --build -d --force-recreate --renew-anon-volumes` → 強制重建 anon volume
+- 教訓:**改 deps 之後永遠加 `--renew-anon-volumes`**,或 alias 成一個 shell command
+
+#### 坑 2:重構後忘了改 API endpoint(連動 bug)
+- 重構 fred.py 把 `fetch_cpi` 改名為 `fetch_new`,但 `app/api/routes/events.py` 還 import 舊名
+- backend container 啟動就 ImportError 死
+- 修法:刪掉 M1 用的 `_admin/trigger-fred-cpi` endpoint(已被 M2 的 Beat 自動化取代)
+- 教訓:**重構函式名後跑 `grep -r "old_name"`** 或讓 IDE refactor → rename 把 reference 全找出來
+
+#### 坑 3:asyncio.run() + SQLAlchemy pool = loop binding 災難
+- 症狀:`RuntimeError: got Future attached to a different loop`
+- 根因:asyncpg connection 跟 event loop 綁定,Celery 的 `asyncio.run()` 每次開新 loop → pool 重用舊 connection 就炸
+- 修法見上面 `transient_session()`
+- **這是 Python async 生態最常踩的坑之一**,值得寫進面試故事:
+  - 「我遇到這個 bug → 查到是 SQLAlchemy async + event loop 的問題 → 知道 NullPool 是 worker 場景的標準解法 → 用 context manager 包起來保持其他地方乾淨」
+
+---
+
+### 學到的觀念
+
+1. **Pure function 是測試之友**:adapter 不碰 DB,測試就不用 db fixture,跑得超快(unit test 不用 docker)
+
+2. **`(複合 unique constraint)` 才能解決「不同 source 同 external_id」**:單一 `external_id` unique 會擋掉 FRED 的 "CPIAUCSL:2026-04-01" 跟假設另一個 source 用了同樣 string 的合法情況
+
+3. **Column-oriented JSON vs row-oriented**:SEC API 為了省 bandwidth 用 column orientation(每個欄位一個 array,要靠 index 對應)— 第一次看會以為 API 設計不好,實際上是合理的 trade-off,要習慣 zip 起來
+
+4. **`asyncio.run()` 每次都開新 loop**:這是 stdlib 設計,不是 bug。但搭配「跨 call 共享狀態」(像 connection pool)就要特別小心
+
+5. **`defusedxml` 是免費的 interview 加分點**:幾乎沒成本,但展示出「你知道有 XML 安全議題」
+
+---
+
+### 面試可能會被問到
+
+**Q1: 為什麼把 adapter 拆成 pure function?直接寫 DB 不是更簡單?**
+- 三個原因:
+  - **可測試性**:pure function 只要 mock HTTP,不用 mock 也不用真 DB,測試極快
+  - **可重用性**:同一個 adapter 可以給 Celery task / CLI 工具 / backfill 腳本用
+  - **單一職責**:adapter 不該知道 transaction、rollback、unique constraint
+- 「writer + adapter」拆分對應軟體工程的 **ports and adapters / hexagonal architecture**
+
+**Q2: SEC EDGAR API 為什麼把資料用 column 不用 row 排?**
+- 省 bandwidth:row-oriented 每筆都要寫一次 key name(`{"form": "8-K", "date": ...}, {"form": ...}`),column-oriented 只寫一次
+- 對 SEC 來說省 50%+ 流量;對我們來說付出 zip 邏輯的成本
+- 類似的設計在 Parquet、ClickHouse 等 columnar database 也是這種思維
+
+**Q3: 你的 `transient_session()` 為什麼用 `NullPool`?有什麼成本?**
+- 因為 Celery 每次 task `asyncio.run()` 都開新 event loop
+- asyncpg connection 跟 loop 綁定,pool 裡舊 loop 的 connection 在新 loop 用會炸
+- NullPool = 不 pool,每次 connect-disconnect → 沒有跨 loop 重用問題
+- 成本:每個 task 多一次 TCP handshake (~5ms) + auth round trip (~3ms)
+- 對我們每小時跑一次的 task,8ms 完全可以忍。對 1000 task/秒的 worker 就不行 — 那時要改用 celery-pool-asyncio 或 sync DB driver
+
+**Q4: 為什麼 SEC 一定要 User-Agent?其他 API 怎麼沒這個要求?**
+- SEC 是政府機構,有 fair-access 規定保護伺服器
+- User-Agent 含 email 是給他們能「**找到濫用的 bot 把你 ban 掉**」
+- 不照規矩會被 IP block(不會回 403,直接 connection refused),所以一定要遵守
+- 其他 API 通常用 API key + rate limit 處理,SEC 走的是「**透明 + 信任 + 監督**」路線
+
+**Q5: FOMC RSS 為什麼用 `<link>` 當 external_id 不用 GUID?**
+- 好的 RSS feed 會有 `<guid>` 欄位(global unique identifier)
+- Fed 的 feed 沒給 — 唯一穩定的 identifier 是 `<link>` URL
+- URL 一旦發出就是固定的(press release 不會搬家)
+- 真的有 `<guid>` 的話會優先用,但要處理 case where feed 改格式
+
+**Q6: 三層 task retry 配置怎麼想?**
+- Layer 1 — tenacity in adapter:「打一次 API 中網路抖一下」,4 次 1-10s
+- Layer 2 — Celery autoretry:「FRED/SEC/FOMC 整個 outage 30 分鐘」,5 次 backoff
+- Layer 3 — Beat schedule:「Celery 都失敗 → 下個 schedule cycle 自然重試」
+- 三層各自處理不同 scale 的 failure,沒有 overlap,沒有 gap
+
+---
+
+### 驗收狀態
+
+- [x] `docker compose up` 5 個 service 全部 healthy(postgres/redis/backend/worker/beat)
+- [x] Worker 註冊 3 個 task:`fetch_fred_cpi_task`、`fetch_sec_edgar_task`、`fetch_fomc_task`
+- [x] Beat schedule 載入 3 個排程
+- [x] 手動 `celery call` 3 個 task 全部成功
+- [x] DB 有 3 個 source 的真實資料:
+  - FRED: 11 筆 CPI(月度,回溯一年)
+  - SEC_EDGAR: 5 筆 8-K(過去 14 天 watchlist 新發的)
+  - FOMC: 4 筆 FOMC statement(近期)
+- [x] `GET /api/v1/events` 回傳混合 3 source 資料,published_at desc 排序正確
+- [x] 18 個 pytest 全綠(4 FRED unit + 5 SEC unit + 6 FOMC unit + 3 writer integration)
+- [x] Ruff lint + strict mypy compatible,0 errors
 
 ---
 

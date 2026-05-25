@@ -1,8 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.adapters.fred import fetch_cpi
 from app.db.models import Event
 from app.db.session import get_db
 from app.schemas.event import EventListResponse, EventRead, PaginationMeta
@@ -35,14 +34,3 @@ async def list_events(
         data=[EventRead.model_validate(e) for e in events],
         meta=PaginationMeta(page=page, per_page=per_page, total=total),
     )
-
-
-# DECISION: manual-trigger endpoint for Milestone 1 only. Milestone 2 replaces this with
-# Celery Beat scheduling. Kept under POST so it's not crawlable.
-@router.post("/_admin/trigger-fred-cpi", include_in_schema=False)
-async def trigger_fred_cpi(db: AsyncSession = Depends(get_db)) -> dict[str, int | str]:
-    try:
-        inserted = await fetch_cpi(db)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return {"status": "ok", "inserted": inserted}

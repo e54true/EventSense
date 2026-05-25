@@ -21,6 +21,9 @@ dependencies = [
     "structlog>=24.4.0",
     # Task queue (Milestone 2+)
     "celery[redis]>=5.4.0",
+    # Safe XML parsing for FOMC RSS feed (Milestone 3+) — guards against
+    # XXE / billion-laughs attacks that stdlib xml.etree is vulnerable to.
+    "defusedxml>=0.7.1",
 ]
 
 [dependency-groups]
@@ -55,7 +58,8 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["S101", "S105", "S106"]  # asserts, hardcoded passwords ok in tests
+# S314: stdlib xml parsing is fine in tests where inputs are hardcoded fixtures.
+"tests/**/*.py" = ["S101", "S105", "S106", "S314"]
 "alembic/versions/*.py" = ["E501"]            # auto-generated migrations
 
 [tool.ruff.lint.flake8-bugbear]

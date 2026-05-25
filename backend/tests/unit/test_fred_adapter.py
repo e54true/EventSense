@@ -1,21 +1,21 @@
 """Unit tests for FRED adapter — parsing logic, no real HTTP, no DB.
 
-We use pytest-httpx to intercept httpx requests. The adapter's DB writes are tested
-in tests/integration/test_fred_idempotency.py against a real Postgres.
+The adapter is pure (returns list[RawEvent]); persistence is tested in
+tests/integration/test_event_writer.py.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
 from pytest_httpx import HTTPXMock
 
-from app.adapters.fred import FRED_API_BASE, _fetch_series_observations, fetch_cpi
+from app.adapters.fred import FRED_API_BASE, _fetch_series_observations, fetch_new
+from app.db.models import EventSource
 
 
 @pytest.fixture(autouse=True)
 def _set_fred_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every test in this file needs FRED_API_KEY set; reset get_settings cache too."""
     monkeypatch.setenv("FRED_API_KEY", "test-key-12345")
     from app.config.settings import get_settings
 
@@ -35,7 +35,6 @@ async def test_fetch_observations_returns_parsed_list(httpx_mock: HTTPXMock) -> 
     result = await _fetch_series_observations("CPIAUCSL")
     assert len(result) == 2
     assert result[0]["date"] == "2026-04-01"
-    assert result[0]["value"] == "332.4"
 
 
 async def test_fetch_observations_raises_on_5xx(httpx_mock: HTTPXMock) -> None:
@@ -46,32 +45,28 @@ async def test_fetch_observations_raises_on_5xx(httpx_mock: HTTPXMock) -> None:
         await _fetch_series_observations("CPIAUCSL")
 
 
-async def test_fetch_cpi_skips_missing_value() -> None:
-    """Observations with value=='.' (FRED's missing-data marker) must be skipped silently."""
+async def test_fetch_new_skips_missing_value() -> None:
+    """value=='.' (FRED's missing-data marker) and non-numeric values must be skipped."""
     observations = [
         {"date": "2026-04-01", "value": "332.4"},
-        {"date": "2026-03-01", "value": "."},  # missing — should be skipped
-        {"date": "2026-02-01", "value": "327.5"},
+        {"date": "2026-03-01", "value": "."},      # missing — skip
+        {"date": "2026-02-01", "value": "n/a"},    # garbage — skip
+        {"date": "2026-01-01", "value": "327.5"},
     ]
-    # db.add is sync in SQLAlchemy; everything else is async. Mix mock types accordingly.
-    fake_db = AsyncMock()
-    fake_db.add = MagicMock()
-    fake_db.scalar = AsyncMock(return_value=None)  # nothing exists yet
-    fake_db.flush = AsyncMock()
-    fake_db.commit = AsyncMock()
-
     with patch(
         "app.adapters.fred._fetch_series_observations",
         new=AsyncMock(return_value=observations),
     ):
-        inserted = await fetch_cpi(fake_db)
+        events = await fetch_new()
 
-    # 2 valid observations queued, the "." row skipped.
-    assert inserted == 2
-    assert fake_db.add.call_count == 2
+    assert len(events) == 2
+    assert all(e.source == EventSource.FRED for e in events)
+    assert events[0].external_id == "CPIAUCSL:2026-04-01"
+    assert events[0].payload["value"] == 332.4
+    assert events[1].external_id == "CPIAUCSL:2026-01-01"
 
 
-async def test_fetch_cpi_raises_runtime_error_without_key(
+async def test_fetch_new_raises_runtime_error_without_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("FRED_API_KEY", "")
@@ -79,6 +74,5 @@ async def test_fetch_cpi_raises_runtime_error_without_key(
 
     get_settings.cache_clear()
 
-    fake_db = AsyncMock()
     with pytest.raises(RuntimeError, match="FRED_API_KEY not configured"):
-        await fetch_cpi(fake_db)
+        await fetch_new()

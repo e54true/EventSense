@@ -1,12 +1,11 @@
 """Celery tasks that wrap async fetcher adapters.
 
-Celery itself is sync, so each task spins up a fresh event loop via asyncio.run()
-to call the underlying async adapter. This is the canonical pattern when you don't
-want to pull in celery-pool-asyncio or restructure adapters as sync.
+Pattern for every source:
+  1. Call adapter.fetch_new() to get list[RawEvent]
+  2. Hand the list to event_writer.persist() for dedup + insert
 
-Trade-off: one event loop per task invocation has non-zero overhead, but at our
-scale (one task per hour per source) it's negligible. If task volume grows 100x,
-revisit with celery-asyncio-pool or split into worker types.
+Celery itself is sync, so each task spins up a fresh event loop via asyncio.run()
+to call the underlying async code.
 """
 
 import asyncio
@@ -15,33 +14,54 @@ from typing import Any
 import httpx
 import structlog
 
-from app.adapters.fred import fetch_cpi
-from app.db.session import AsyncSessionLocal
+from app.adapters import fomc, fred, sec_edgar
+from app.db.session import transient_session
+from app.schemas.raw_event import RawEvent
+from app.services.event_writer import persist_events
 from app.workers.celery_app import celery_app
 
 logger = structlog.get_logger(__name__)
 
 
-async def _run_fetch_cpi() -> int:
-    async with AsyncSessionLocal() as db:
-        return await fetch_cpi(db)
+async def _fetch_and_persist(raw_events: list[RawEvent]) -> int:
+    # transient_session() builds a fresh NullPool engine per call — required because
+    # each Celery task runs in its own asyncio.run() loop and the FastAPI pool's
+    # connections are bound to the original loop.
+    async with transient_session() as db:
+        return await persist_events(db, raw_events)
 
 
-@celery_app.task(
-    name="app.tasks.fetchers.fetch_fred_cpi_task",
-    # Celery-level retry: catches transient HTTP errors that survive tenacity's inner
-    # retry (e.g. FRED is down for >30s). Network blips inside a single fetch are
-    # handled by tenacity inside the adapter itself.
+def _run_fetch(source_name: str, fetch_fn: Any) -> dict[str, int]:
+    """Shared scaffolding: call adapter, persist, log uniformly."""
+    log = logger.bind(task=f"fetch_{source_name}_task")
+    log.info("task.started")
+    raw_events = asyncio.run(fetch_fn())
+    inserted = asyncio.run(_fetch_and_persist(raw_events))
+    log.info("task.completed", parsed=len(raw_events), inserted=inserted)
+    return {"parsed": len(raw_events), "inserted": inserted}
+
+
+# Common Celery decorator config — every fetcher gets the same retry policy.
+# autoretry_for catches transient HTTPError that tenacity (inside adapter) couldn't.
+_common_task_kwargs = dict(
     autoretry_for=(httpx.HTTPError,),
     retry_backoff=True,
-    retry_backoff_max=600,  # cap at 10 min
+    retry_backoff_max=600,
     retry_jitter=True,
     retry_kwargs={"max_retries": 5},
 )
-def fetch_fred_cpi_task() -> dict[str, Any]:
-    """Hourly task: fetch latest FRED CPI observations and store new ones."""
-    log = logger.bind(task="fetch_fred_cpi_task")
-    log.info("task.started")
-    inserted = asyncio.run(_run_fetch_cpi())
-    log.info("task.completed", inserted=inserted)
-    return {"inserted": inserted}
+
+
+@celery_app.task(name="app.tasks.fetchers.fetch_fred_cpi_task", **_common_task_kwargs)
+def fetch_fred_cpi_task() -> dict[str, int]:
+    return _run_fetch("fred_cpi", fred.fetch_new)
+
+
+@celery_app.task(name="app.tasks.fetchers.fetch_sec_edgar_task", **_common_task_kwargs)
+def fetch_sec_edgar_task() -> dict[str, int]:
+    return _run_fetch("sec_edgar", sec_edgar.fetch_new)
+
+
+@celery_app.task(name="app.tasks.fetchers.fetch_fomc_task", **_common_task_kwargs)
+def fetch_fomc_task() -> dict[str, int]:
+    return _run_fetch("fomc", fomc.fetch_new)
