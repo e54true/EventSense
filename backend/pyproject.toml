@@ -27,6 +27,11 @@ dependencies = [
     # Stock prices + earnings (Milestone 4+). Unofficial Yahoo Finance scraper —
     # API can change anytime, so wrap every call in broad except blocks.
     "yfinance>=0.2.50",
+    # LLM analysis (Milestone 5+). instructor patches the SDKs to return
+    # Pydantic models directly with auto-retry on malformed JSON.
+    "openai>=1.55.0",
+    "anthropic>=0.40.0",
+    "instructor>=1.7.0",
 ]
 
 [dependency-groups]

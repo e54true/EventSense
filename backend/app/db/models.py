@@ -9,6 +9,8 @@ from sqlalchemy import (
     BigInteger,
     DateTime,
     Enum,
+    Float,
+    ForeignKey,
     Index,
     Numeric,
     String,
@@ -16,7 +18,7 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
 
@@ -33,6 +35,18 @@ class EventStatus(StrEnum):
     ANALYZED = "ANALYZED"
     FAILED = "FAILED"
     IGNORED = "IGNORED"
+
+
+class PredictionDirection(StrEnum):
+    BULLISH = "BULLISH"
+    BEARISH = "BEARISH"
+    NEUTRAL = "NEUTRAL"
+
+
+class PredictionMagnitude(StrEnum):
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
 
 
 class Event(Base, TimestampMixin):
@@ -75,6 +89,62 @@ class Event(Base, TimestampMixin):
         default=EventStatus.FETCHED,
     )
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # ondelete=CASCADE on the child side; lazy loading suppressed for async safety.
+    predictions: Mapped[list["Prediction"]] = relationship(
+        back_populates="event",
+        cascade="all, delete-orphan",
+        lazy="raise",  # force callers to explicitly opt into loading (selectinload)
+    )
+
+
+class Prediction(Base, TimestampMixin):
+    """LLM-generated forecast attached to one Event for one ticker.
+
+    Schema per EventSense_Spec §6.2 + llm_cost_usd added in §9 cost guardrails.
+    No unique constraint on (event_id, ticker, prompt_version) — re-running the
+    analyzer with a new prompt version intentionally produces a new prediction,
+    so old vs new can be compared.
+    """
+
+    __tablename__ = "predictions"
+    __table_args__ = (
+        Index("ix_predictions_event", "event_id"),
+        Index("ix_predictions_ticker_time", "ticker", "predicted_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    event_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("events.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    ticker: Mapped[str] = mapped_column(String(10), nullable=False)
+    direction: Mapped[PredictionDirection] = mapped_column(
+        Enum(PredictionDirection, name="prediction_direction"),
+        nullable=False,
+    )
+    magnitude: Mapped[PredictionMagnitude] = mapped_column(
+        Enum(PredictionMagnitude, name="prediction_magnitude"),
+        nullable=False,
+    )
+    # LLM-reported certainty about direction (not magnitude) — see spec §9.
+    # Stored as float not Decimal; we're not doing financial arithmetic on it.
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    reasoning: Mapped[str] = mapped_column(Text, nullable=False)
+    llm_provider: Mapped[str] = mapped_column(String(20), nullable=False)
+    llm_model: Mapped[str] = mapped_column(String(50), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(20), nullable=False)
+    # USD cost of this single call. Sum-by-day drives the daily cap check.
+    llm_cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    predicted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    # Backref so /events/{id} can eager-load predictions in one query.
+    event: Mapped["Event"] = relationship(back_populates="predictions")
 
 
 class PriceSnapshot(Base):

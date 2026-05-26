@@ -1,10 +1,11 @@
 from fastapi import APIRouter
 
-from app.api.routes import events, prices
+from app.api.routes import events, predictions, prices
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(events.router)
 api_router.include_router(prices.router)
+api_router.include_router(predictions.router)
 
 
 @api_router.get("/health", tags=["health"])

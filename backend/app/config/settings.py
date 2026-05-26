@@ -52,6 +52,22 @@ class Settings(BaseSettings):
         """Parsed watchlist as a list of uppercase tickers, whitespace-trimmed."""
         return [t.strip().upper() for t in self.default_tickers.split(",") if t.strip()]
 
+    # --- LLM analysis (Milestone 5+) ---
+    openai_api_key: str = Field(default="", description="Required for OpenAI analyzer")
+    anthropic_api_key: str = Field(
+        default="",
+        description="Optional — enables the claude-* path in the model router",
+    )
+    # Model names — env-overridable so we can flip to newer versions without a redeploy.
+    llm_default_model: str = Field(default="gpt-4o-mini")
+    llm_premium_model: str = Field(default="gpt-4o")
+    # Hard daily spend cap. When today's accumulated cost exceeds this, the
+    # router downgrades premium tasks to the default model and logs a warning.
+    llm_daily_cost_cap_usd: float = Field(default=1.0)
+    # How many FETCHED events the analyzer pulls per task run. Keeps long-running
+    # tasks bounded so a backlog doesn't hold a worker for 10+ minutes.
+    llm_analyzer_batch_size: int = Field(default=20)
+
 
 @lru_cache
 def get_settings() -> Settings:

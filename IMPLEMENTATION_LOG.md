@@ -938,10 +938,322 @@
 
 ## Milestone 5 — LLM analysis
 
-> **狀態**:⏳ 未開始
-> **目標**:OpenAI/Anthropic + instructor,Analyzer worker。
+> **狀態**:✅ 完成
+> **目標**:接 OpenAI + Anthropic + `instructor`,新 `predictions` 表,Analyzer worker(FETCHED events → LLM 預測 → ANALYZED),model router、cost tracking、daily cap。
 
-_(待實作)_
+### 做了什麼(依檔案分類)
+
+#### `backend/pyproject.toml`
+- 加 `openai>=1.55.0`、`anthropic>=0.40.0`、`instructor>=1.7.0`
+- `instructor` 是把 OpenAI / Anthropic SDK patch 過,**讓 LLM 直接回 Pydantic model**(LLM 回 malformed JSON 時自動 retry)
+
+#### `backend/app/db/models.py`(新 model)
+- 新 `Prediction` model 對應 spec §6.2 + 加 `llm_cost_usd` 欄位:
+  - `id: UUID PK`(低頻表,跟 events 一樣選擇)
+  - `event_id` FK 到 events,`ondelete=CASCADE` — 刪 event 自動刪預測
+  - `direction` / `magnitude` 用 `StrEnum`(PG ENUM type)
+  - `confidence: Float`(不是 Decimal — 不做金錢計算)
+  - `llm_provider` / `llm_model` / `prompt_version` 都存進 row → 之後可以 group by 比較準確率
+  - `llm_cost_usd: Float` 給 daily cap 用
+- Event model 加 `predictions: Mapped[list["Prediction"]] = relationship(..., lazy="raise")`
+  - `lazy="raise"` 強制呼叫方明確 `selectinload(Event.predictions)` → 避免 async 環境下的 N+1 lazy load 災難
+
+#### `backend/alembic/versions/bb5f83a02cf9_add_predictions_table.py`
+- `alembic revision --autogenerate` 產生
+- 兩個 ENUM types(prediction_direction、prediction_magnitude)
+- 兩個 index(event_id 給 join,(ticker, predicted_at) 給「找最近 N 個 AAPL 預測」)
+
+#### `backend/app/config/settings.py`(加欄位)
+- `openai_api_key`、`anthropic_api_key`(optional)
+- `llm_default_model = "gpt-4o-mini"`、`llm_premium_model = "gpt-4o"`
+- `llm_daily_cost_cap_usd = 1.0` — hard cap
+- `llm_analyzer_batch_size = 20` — 每次 task 跑多少 event(限制 task 時長)
+
+#### `backend/app/llm/schemas.py`(新)
+- `TickerImpact`:單一 ticker 的預測結構
+  - `direction: Literal["BULLISH", "BEARISH", "NEUTRAL"]` — `Literal` 比 `Enum` 對 LLM 更友善(generated JSON schema 直接是 string enum)
+  - `magnitude: Literal["LOW", "MEDIUM", "HIGH"]`
+  - `confidence: float = Field(ge=0.0, le=1.0)` — Pydantic 在 LLM 輸出時就驗證
+  - `reasoning: str = Field(max_length=500)` — 強制 LLM 只給一句話,別寫散文
+- `EventAnalysis`:整個 event 的分析,含 `summary` + `list[TickerImpact]`
+- 兩個都 `frozen=True`(value object)
+
+#### `backend/app/prompts/event_analysis_v1.txt`(新)
+- v1 prompt,**versioned**:之後改 prompt 要 v2 v3...,舊預測保留原本 prompt_version
+- 內容:
+  - 直接餵 event payload JSON(不要 paraphrase)
+  - 列出 watchlist tickers
+  - 強調「**沒有 plausible impact 就 NOT include**,empty list 是合法的」
+  - 強調 confidence 是對 **direction** 的把握,不是 magnitude
+  - 限制 reasoning 一句話
+
+#### `backend/app/llm/clients.py`(新)
+- `instructor.from_openai(AsyncOpenAI(...))` / `instructor.from_anthropic(AsyncAnthropic(...))`
+- Module 層 lazy singleton:`_openai_client` / `_anthropic_client`
+- 兩家共用介面 `analyze_event(choice, prompt) -> LLMCallResult`
+- `LLMCallResult` 含 parsed `EventAnalysis` + token counts(算 cost 用)
+- **`create_with_completion`** 而非 `create`:同時回傳 parsed Pydantic + raw response,可以從 raw 拿 `usage` token counts
+- OpenAI 跟 Anthropic 的 `usage` 屬性名字不一樣(`prompt_tokens` vs `input_tokens`),這層幫你 normalize
+
+#### `backend/app/llm/router.py`(新)
+- `choose_model(source, event_type, today_spend_usd) -> ModelChoice`
+- 規則:
+  - `(FOMC, FOMC_STATEMENT)` 或 `(FRED, ECONOMIC_RELEASE)` → premium (gpt-4o)
+  - 其他 → default (gpt-4o-mini)
+  - **`today_spend_usd >= cap` → 一律 downgrade 到 default,log warning**
+- 不從 model name 推 provider(`claude-...` → anthropic,其他 → openai)
+- 純函式,3 個 input → 1 個 output,**極好測試**
+
+#### `backend/app/llm/cost.py`(新)
+- Hardcoded pricing table(USD per 1M tokens)— 含 gpt-4o-mini / gpt-4o / claude-haiku / claude-sonnet-4-5 / claude-opus
+- `estimate_cost_usd(model, prompt_tokens, completion_tokens) -> float`
+- `today_spend_usd(db)`:`SUM(llm_cost_usd) WHERE predicted_at >= UTC midnight today`
+  - 用 UTC 不用 local time → 部署到不同 region 不會對 day boundary 產生分歧
+- Unknown model → cost 0 + log warning(test 不用 mock pricing)
+
+#### `backend/app/services/analyzer.py`(新)— **M5 心臟**
+- 實作 DB-driven state machine(spec §8):**FETCHED → ANALYZED 或 FAILED**
+- **Queue-table pattern with FOR UPDATE SKIP LOCKED**(下面詳述):
+  - 先 cheap SELECT 拿 N 個 candidate event IDs
+  - 對每個 ID **開新 transient session**,SELECT FOR UPDATE SKIP LOCKED 鎖住
+  - 鎖到 → 跑 LLM、寫預測、commit 釋放鎖
+  - 鎖不到(其他 worker 在處理)→ skip
+- LLM 失敗時 event 設 FAILED + 寫 failure_reason(operator 可以查)
+- **Hallucination filter**:LLM 回非 watchlist 的 ticker(`HALUC`)→ 警告 + 丟掉那一 impact
+- Cost 只算給第一個 prediction,其他設 0(sum 還對,避免 0.0001 USD 分數毛錢)
+
+#### `backend/app/tasks/analyzers.py`(新)
+- Celery task `analyze_pending_task`
+- 跟前面其他 task 一樣的 sync-wrap-async pattern
+- 用獨立的 `analyze_queue`
+
+#### `backend/app/workers/celery_app.py`(修改)
+- include `app.tasks.analyzers`
+- `task_routes` 加 `app.tasks.analyzers.*` → `analyze_queue`
+- Beat schedule 加 `"analyzer-1min"`:`crontab(minute="*")` 每分鐘 fire
+- (Spec acceptance:event 出現後 ≤2 分鐘要有預測 → 1-min 排程綽綽有餘)
+
+#### `docker-compose.yml`(加 service)
+- 新 `analyzer` service:獨立 worker,**只 listen `analyze_queue`**,`--concurrency=2`
+- 為什麼分開:LLM call 慢(~1-2s/次)+ 有 rate limit,跟 fetcher(IO-bound,可以高 concurrency)分開避免互相干擾
+
+#### `backend/app/schemas/prediction.py` + `backend/app/api/routes/predictions.py`(新)
+- `GET /api/v1/predictions/{id}` → 單一 prediction 詳情
+
+#### `backend/app/api/routes/events.py`(擴充)
+- 新 `GET /api/v1/events/{id}` → event + predictions
+- 用 `selectinload(Event.predictions)` 做 eager loading → **1 + 1 query**(不是 N+1)
+- response 包成 `EventDetailResponse { data: EventRead, predictions: [PredictionRead] }`
+
+#### `backend/.env` / `.env.example`
+- 加 OPENAI_API_KEY、ANTHROPIC_API_KEY、LLM_DAILY_COST_CAP_USD、LLM_DEFAULT_MODEL、LLM_PREMIUM_MODEL
+
+#### 測試(38 → 57 個全綠)
+- `test_llm_schemas.py`(5 tests):TickerImpact 合法/拒絕 out-of-range confidence/拒絕未知 direction、EventAnalysis empty impacts OK、summary 長度 cap
+- `test_llm_router.py`(6 tests):high-stakes 拿 premium、routine 拿 default、over-budget downgrade、provider 從 model name 推、CPI 算 high-stakes、earnings 算 routine
+- `test_llm_cost.py`(4 tests):gpt-4o-mini 算對、gpt-4o 算對、unknown model = 0、case-insensitive lookup
+- `test_analyzer.py`(4 integration tests):FETCHED → ANALYZED、LLM 失敗 → FAILED + reason、hallucinated ticker 被丟、only picks FETCHED status
+
+---
+
+### 過程中踩到的坑(M5 最重要的故事)
+
+#### 坑 1:Concurrency race condition — duplicate predictions
+**症狀**:第一次跑完,20 events 卻有 58 predictions,有些 event 出現 4 次預測。
+
+**根因**:
+- Analyzer worker 設 `--concurrency=2`(兩個並行 task 槽)
+- Beat 每分鐘 fire 一次 → schedule 跟我手動 `celery call` 重疊
+- 兩個 task instance 同時跑,都做 `SELECT WHERE status=FETCHED` → 拿到**完全一樣的 20 個 events**
+- 各自送 LLM、各自寫 predictions → 重複
+
+**第一次嘗試的修法**(不夠):加 `SELECT ... FOR UPDATE SKIP LOCKED`
+```python
+events = await db.scalars(
+    select(Event)
+    .where(Event.status == EventStatus.FETCHED)
+    .limit(batch_size)
+    .with_for_update(skip_locked=True)
+)
+```
+
+**為什麼這樣不夠**:我們的 `_process_one` 每處理完一個 event 就 commit。`commit()` 會釋放**該 transaction 的所有 lock**,不只是已完成那一筆。所以:
+- Task A: SELECT FOR UPDATE → lock rows 1-20
+- Task A: process row 1, commit → **rows 1-20 lock 全部釋放**
+- Task B: SELECT FOR UPDATE → lock rows 2-20(它們又開放了)
+- Task A: process row 2 → UPDATE row 2 → 跟 Task B 衝突...
+
+**真正的修法**:重寫 `analyze_pending` 成 **per-event transaction** 模式:
+```python
+candidate_ids = await _candidate_event_ids(db, batch_size)  # cheap read-only
+
+for event_id in candidate_ids:
+    async with transient_session() as task_db:   # 全新 transaction per event
+        event = await task_db.scalar(
+            select(Event)
+            .where(Event.id == event_id, Event.status == EventStatus.FETCHED)
+            .with_for_update(skip_locked=True)
+        )
+        if event is None:
+            skipped_locked += 1
+            continue
+        await _process_one(task_db, event, spend_today)
+        await task_db.commit()
+```
+
+每個 event 自己一個 transaction = 自己一個 lock scope。其他 worker 跑同一個 event 時 SELECT 會回 None(SKIP LOCKED 略過),乾淨 skip。
+
+**驗證**:reset DB,fire 3 個 analyzer task 平行 → **20 unique events, 35 predictions, 0 duplicates**
+
+這是 **distributed systems 經典 queue-table 模式**,任何要實作 worker pool + 共享 task table 的系統都遇得到。
+
+#### 坑 2:Anonymous volume 第三次咬人
+- 加 LLM deps 之後 `docker compose up --build -d` → analyzer container `ModuleNotFoundError: instructor`
+- 第三次了。一定要 `--force-recreate --renew-anon-volumes`
+- 該寫成 makefile target 了:`make rebuild` 包好正確 flags
+
+---
+
+### 為什麼這樣選(關鍵決策)
+
+#### 為什麼用 `instructor` 而不是手動 parse LLM JSON?
+- 沒 instructor:你寫 prompt 「請回 JSON」、LLM 偶爾回 markdown ```json ... ```、偶爾少一個 brace、偶爾欄位名拼錯
+- 你要手寫 retry loop + json.loads + KeyError 防禦
+- instructor 全包了:JSON schema 從 Pydantic model 自動產生 → 餵給 OpenAI 的 function calling / structured output → 解析失敗自動 retry(把 validation error 丟回給 LLM 改)
+- 程式碼從 ~50 行手刻變成 3 行
+
+#### 為什麼 `Literal` 而不是 `Enum` 給 LLM schema?
+- `Literal["BULLISH", "BEARISH", "NEUTRAL"]` → 產生的 JSON schema 是 `{type: string, enum: [...]}`
+- LLM 看到 enum 就乖乖挑一個
+- 用 `class Direction(StrEnum)` 也可以,但 `Literal` 更輕量、更直接表達意圖
+- DB 那邊用 `StrEnum`(PG ENUM type 要),LLM 這邊用 `Literal`(prompt schema 要),分工
+
+#### 為什麼 cost 只算給第一個 prediction?
+- 一個 LLM call 產生 N 個 prediction(N = impacts 數量)
+- 平均分:0.0001 / 3 = 0.0000333 — 小數第 7 位,沒意義
+- 全算給第一個:**daily SUM 還是對的**,sum-by-day 的 use case 不受影響
+- per-prediction cost analytics 變得不準?反正 LLM call cost 是 per-event 的，把 per-prediction 拆分本來就是 fake granularity
+
+#### 為什麼 analyzer 不用 fetcher 那種 `autoretry_for=HTTPError`?
+- LLM SDK 自帶 retry(network、rate limit)
+- 失敗大多是「**這 event payload LLM 看不懂**」或「**JSON 格式爛**」— 重試不會變對
+- 直接 mark FAILED + log + 等 operator 看(可能改 prompt v2)
+- 真的是「OpenAI 整個掛 1 小時」這種情境,Beat 1-min 排程下次跑會自然重試 still-FETCHED 的 events
+
+#### 為什麼有 `failure_reason` 欄位?
+- FAILED 沒有原因 = 黑箱,operator 不知道為何掛
+- 寫進 DB(不只 log)→ web UI 之後可以列「最近失敗的 events,點開看為何」
+- M5 沒 UI,但欄位先準備好,M7 直接用
+
+#### 為什麼 daily cap 是 downgrade 不是 hard stop?
+- Hard stop = 整個 LLM pipeline 停 → 系統沒新預測 = 看起來像壞了
+- Downgrade = 仍有預測,只是用便宜 model → 還能 demo,只是 marginal 準確率降
+- log warning 讓 ops 注意到
+- spec §9「if exceeded, downgrade all to gpt-4o-mini and log warning」明確要求
+
+---
+
+### 學到的觀念
+
+1. **Queue table 是 backend 經典 pattern**:用 DB 表當 task queue,worker 用 `SELECT ... FOR UPDATE SKIP LOCKED LIMIT 1` 拿任務。比 Celery + Redis 簡單,但併發控制要小心。我們的 events 表就是 implicit queue,status 欄位就是任務狀態。
+
+2. **`FOR UPDATE` 跟 transaction scope 綁定**:lock 是 transaction 級的,commit 一次釋放全部。要 fine-grained lock 就要 fine-grained transaction。
+
+3. **`instructor` = LLM 界的 Pydantic-FastAPI**:把「型別契約」這個概念套到 LLM 上。Schema 是 source of truth,LLM 必須遵守。
+
+4. **Versioned prompt 是必要的**:`prompt_version="v1"` 寫進 DB → 改 prompt 後可以「**比較 v1 vs v2 的預測準確率**」(M6 / M8 用)。沒這個欄位之後分析像在霧裡看花。
+
+5. **Provider-agnostic 設計值得**:`ModelChoice.provider` + `analyze_event(choice, ...)` → 切換 OpenAI / Anthropic 只改 model name。今天 OpenAI 漲價、明天 Anthropic 出更好的 model — 都不用改 code。
+
+6. **`lazy="raise"` 是 async ORM 的救星**:預設 lazy load 在 async session 會炸(因為要 sync access)。`raise` 強制 explicit `selectinload`,把 bug push 到 dev time 而不是 production。
+
+---
+
+### 面試可能會被問到
+
+**Q1: 你怎麼確保 LLM 不會幻覺?**
+- 三層防護:
+  1. **Schema-enforced output** via instructor:Direction/Magnitude 是 enum,LLM 不能回 "MAYBE_UP"
+  2. **Confidence 範圍**:Pydantic 擋 0-1 之外
+  3. **Hallucination filter**:LLM 給的 ticker 不在 watchlist 就 drop + log
+- 沒辦法 100% 防,但這三層擋掉 99% 常見問題
+
+**Q2: 為什麼你的 queue 用 DB 表不用 Redis Streams / RabbitMQ?**
+- 我們 events 表本來就在那 — 加個 status 欄位就變 queue,不引入新組件
+- 規模小(<100 events/小時)— DB 性能足夠
+- 好處:**事件本體 + queue 狀態原子性**(同一 transaction)
+- 大規模(>10k/秒)會換 Kafka,但我們不是
+
+**Q3: 你說 FOR UPDATE SKIP LOCKED 是 queue-table 標準做法 — 講一下這個 SQL?**
+- `FOR UPDATE`:鎖住 SELECT 出來的 rows,其他 transaction 想 UPDATE 會等
+- `SKIP LOCKED`:看到已鎖的 rows 直接跳過,不等
+- 加起來:多個 worker 平行 SELECT,各自拿一批不同的 rows,**沒人等沒人撞**
+- Postgres 9.5+ 才有 SKIP LOCKED;MySQL 8+ 也支援
+- 經典用法:「**N 個 worker 從同一張 task 表搶任務**」
+
+**Q4: prompt v1 → v2 怎麼遷移?**
+- 不要 in-place 改 prompt — 改的話舊預測沒辦法跟新預測比
+- 流程:
+  1. 寫 `event_analysis_v2.txt`,bump `PROMPT_VERSION = "v2"`
+  2. 重新 analyze 已存在的 events(可選),新預測 prompt_version="v2"
+  3. 之後 new event 都用 v2
+- Analytics:`SELECT alignment_rate FROM ... GROUP BY prompt_version` 看 v1 vs v2
+
+**Q5: 你的 cost cap 怎麼處理跨 timezone?**
+- UTC midnight 是 day boundary
+- 為什麼不用 server local time:多 region 部署會對 day 不一致(US 早上是亞洲晚上)
+- UTC 是 single source of truth,**所有 metric 都該用 UTC,顯示給人看時再轉**
+
+**Q6: 如果 OpenAI 連續 30 秒回 429 (rate limit) 怎麼辦?**
+- OpenAI SDK 預設有 exponential backoff retry,撐得住短暫 burst
+- 真的撐不住 → exception 上拋 → analyzer mark event FAILED
+- Beat 下次 fire → 看到 FAILED 不會重試(設計選擇,避免 infinite retry)
+- 真的要 retry,operator 手動 `UPDATE events SET status='FETCHED' WHERE id=...`
+- 未來可以加「retryable failure」狀態 — 但 MVP 不需要
+
+---
+
+### 驗收狀態
+
+- [x] `docker compose up` 6 個 service healthy(postgres / redis / backend / worker / **analyzer** / beat)
+- [x] Analyzer worker 註冊 5 個 task(雖然只跑 analyze_pending_task,因為 -Q analyze_queue 限定)
+- [x] Beat 載入 6 個 schedule
+- [x] 真實 OpenAI call 端對端通過 — gpt-4o-mini 跟 gpt-4o 都跑過
+- [x] **20 FETCHED events → 3 parallel analyzer tasks → 0 duplicates** (race fix 確認)
+- [x] FOMC + CPI 自動拿 premium model(gpt-4o,$0.0028/event)
+- [x] SEC 8-K 拿 default model(gpt-4o-mini,$0.00015/event)
+- [x] 預測內容合理:AMZN 8-K → AMZN BULLISH、FOMC statement → SPY+QQQ BEARISH
+- [x] 整批驗證總成本 **$0.046**(20 events,遠低於 $1 cap)
+- [x] `GET /api/v1/events/{id}` 回 event + nested predictions(eager loaded)
+- [x] `GET /api/v1/predictions/{id}` 回單一 prediction
+- [x] 57 個 pytest 全綠(38 → 57)
+- [x] Ruff lint 0 errors
+
+---
+
+### 真實預測範例
+
+```
+SEC_EDGAR (8K_FILING):
+  AMZN 8-K filed 2026-05-22 (items: 5.07)
+  → AMZN BULLISH HIGH conf=0.80
+    reasoning: significant corporate developments may increase investor confidence
+    model: gpt-4o-mini cost=$0.000151
+
+FOMC (FOMC_STATEMENT):
+  Federal Reserve issues FOMC statement  ← 觸發 premium router
+  → SPY BEARISH MEDIUM conf=0.70
+  → QQQ BEARISH MEDIUM conf=0.70
+    reasoning: FOMC's tightening signals will pressure equity / tech indices
+    model: gpt-4o cost=$0.0028
+
+FRED (ECONOMIC_RELEASE):
+  CPI release for 2026-04-01: 332.407  ← 觸發 premium router
+  → SPY BEARISH MEDIUM conf=0.80
+  → QQQ BEARISH MEDIUM conf=0.80
+    reasoning: higher CPI = inflation concern = pressure on broad market
+    model: gpt-4o cost=$0.0029
+```
 
 ---
 

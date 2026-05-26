@@ -84,6 +84,30 @@ services:
     # later won't starve fetcher tasks. Concurrency 4 is plenty for IO-bound work.
     command: celery -A app.workers.celery_app worker --loglevel=info -Q fetch_queue --concurrency=4
 
+  analyzer:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://eventsense:eventsense@postgres:5432/eventsense
+      REDIS_URL: redis://redis:6379/0
+      ENVIRONMENT: development
+    volumes:
+      - ./backend:/app
+      - /app/.venv
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    # Dedicated worker on analyze_queue. Concurrency=2 — LLM APIs have per-org
+    # rate limits, and concurrent calls also burn budget faster than we'd like.
+    command: celery -A app.workers.celery_app worker --loglevel=info -Q analyze_queue --concurrency=2
+
   beat:
     build:
       context: ./backend

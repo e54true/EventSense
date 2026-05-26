@@ -36,7 +36,7 @@ celery_app = Celery(
     broker=settings.redis_url,
     backend=settings.redis_url,
     # Auto-discover tasks in these modules so we don't have to import them by hand.
-    include=["app.tasks.fetchers", "app.tasks.prices"],
+    include=["app.tasks.fetchers", "app.tasks.prices", "app.tasks.analyzers"],
 )
 
 celery_app.conf.update(
@@ -97,5 +97,13 @@ celery_app.conf.beat_schedule = {
         # Fires every 5 min unconditionally; the task itself early-returns when
         # market is closed (handling DST without cron gymnastics).
         "schedule": crontab(minute="*/5"),
+    },
+    "analyzer-1min": {
+        "task": "app.tasks.analyzers.analyze_pending_task",
+        # Aggressive: every minute, look for FETCHED events that haven't been
+        # analyzed yet. Spec §11 M5 acceptance is "every new event automatically
+        # gets predictions within 2 minutes" — 1-min cadence comfortably meets it.
+        # No-op (immediate return) when nothing pending, so cost is trivial.
+        "schedule": crontab(minute="*"),
     },
 }
