@@ -1486,10 +1486,226 @@ SPY     NEUTRAL     D7      0.0094      0.0094   0.0000   TRUE
 
 ## Milestone 7 — Frontend Sprint 1
 
-> **狀態**:⏳ 未開始
-> **目標**:Next.js 14 App Router scaffolding,timeline + event detail 頁。
+> **狀態**:✅ 完成
+> **目標**:Next.js 14 App Router(實際拿到 16.2.6)+ Tailwind v4 + TanStack Query → timeline 首頁 + `/events/[id]` detail page,從瀏覽器能看到 M1-M6 全部累積出來的事件與預測。
 
-_(待實作)_
+### 做了什麼(依檔案分類)
+
+#### `frontend/` scaffolding
+- `npx create-next-app@latest` 一次性建立 — App Router + TypeScript + Tailwind + ESLint
+- **拿到 Next.js 16.2.6**(spec 寫 14,實際是更新的 stable)+ React 19.2 + Tailwind v4 + TS 5
+- Scaffold 自動生 `AGENTS.md` / `CLAUDE.md` 警告未來改 code 的人「**Next.js 16 跟你熟悉的不一樣**」— 對 AI agent 友善的設計
+- 額外 install:`@tanstack/react-query` + `@tanstack/react-query-devtools` + `date-fns`
+- **沒有用 shadcn/ui**:它的 CLI 太互動,piped input 過不去;改自己手刻 4 個小 component 用 Tailwind utility class。對 portfolio 反而加分(展示 Tailwind 直接能力)
+
+#### `frontend/lib/types.ts`(新)
+- 手寫 TypeScript types,**對應 backend Pydantic schema**
+- 涵蓋:`EventSource` / `EventStatus` / `PredictionDirection` / `PredictionMagnitude` / `OutcomeWindow`
+- 完整 response shape:`EventRead` / `PredictionRead` / `EventListResponse` / `EventDetailResponse` / `AccuracyResponse`
+- **DECISION:手寫而非 OpenAPI codegen** — 簡單、能 PR review、不引入 build step。M8 會加 codegen 進 CI
+
+#### `frontend/lib/api.ts`(新)
+- Thin `fetch` wrapper(沒 axios、沒 SWR client lib)
+- `request<T>(path)` 統一處理:`API_BASE` + headers + `cache: "no-store"` + JSON error parsing
+- `APIError` class 帶 status + detail,讓 UI 可以區分「沒資料 vs 真的壞」
+- `api.listEvents()` / `api.getEvent(id)` / `api.getAccuracy(filters)`
+- 用 `NEXT_PUBLIC_API_URL` 環境變數 — Next.js 慣例,`NEXT_PUBLIC_` prefix 才會 ship 進 browser bundle
+
+#### `frontend/lib/utils.ts`
+- `cn(...classes)` — 把 Tailwind class 字串組起來,過濾 falsy
+- 比 `clsx + tailwind-merge` 簡單;沒有 class 衝突場景所以不需要 merge
+
+#### Components(`frontend/components/`)
+- **`SourceBadge.tsx`**:每個 source 一個顏色 — FRED 藍、SEC 紫、FOMC 琥珀、EARNINGS 翠綠。scannability 高
+- **`DirectionBadge.tsx`**:BULLISH ▲ 綠、BEARISH ▼ 紅、NEUTRAL ● 灰 — 用 unicode 三角形避免額外圖庫
+- **`EventCard.tsx`**:timeline 上的卡片 — source badge + 標題 + 相對時間 + ticker tags。**用 `next/link`** 預先 prefetch 點擊目標頁
+- **`PredictionRow.tsx`**:單一 prediction — ticker + direction + magnitude + confidence + reasoning + model 來源
+- **`QueryProvider.tsx`**:`"use client"` + `useState(() => new QueryClient(...))` 確保 client 跨 render 不重建,30s `staleTime` 平衡新鮮度與請求量
+
+#### Pages
+- **`app/layout.tsx`**:全域 layout + nav bar + QueryProvider 包整個 app
+- **`app/page.tsx`** (timeline):`"use client"` + `useQuery(["events"])` → 載入中骨架、錯誤狀態、空狀態三條 path 都有
+- **`app/events/[id]/page.tsx`** (server) + **`client.tsx`**:
+  - Server 元件 only job 是 `await params`(Next.js 16 breaking change!)
+  - Client 元件做 TanStack Query + 渲染
+  - 拆兩個檔案是 Next.js 16 upgrade guide 推薦做法
+
+#### CORS — `backend/app/main.py`(改)
+- 加 FastAPI `CORSMiddleware`,allowlist `localhost:3000` + `127.0.0.1:3000`
+- **不用 `["*"]`**:spec §16 明令禁止 wildcard
+- M9 上 Vercel 後會把 Vercel domain 加進去
+
+#### `frontend/.env.local.example` + `.env.local`
+- 只有 `NEXT_PUBLIC_API_URL=http://localhost:8000`
+- `.env.local` 已被 Next.js 預設 gitignore
+
+---
+
+### Next.js 16 的 breaking change 注意點
+
+scaffold 出來才發現 spec 寫的「Next.js 14」實際是「Next.js 16」,有幾個顯著差異:
+
+1. **`params` / `searchParams` 變 Promise** — 我們的 `/events/[id]` 必須 `await params`
+2. **Turbopack 預設 ON** — 不用加 `--turbopack` flag
+3. **`next lint` 移除** — 用 eslint 直接跑
+4. **Async request APIs 全面強制** — `cookies()` / `headers()` 也要 await
+5. **`devIndicators` 部分 option 移除** — 不影響我們
+
+scaffold 附的 `AGENTS.md` 提醒 AI agent「**這不是你熟悉的 Next.js**」— 我先看完 `node_modules/next/dist/docs/01-app/02-guides/upgrading/version-16.md` 再開始寫,避免照 Next 14/15 寫法踩坑
+
+---
+
+### 為什麼這樣選(關鍵決策)
+
+#### 為什麼不用 shadcn/ui?
+- 它的 CLI 設計成完全互動,piped input 走不過去;debug 太花時間
+- M7 只需要 4-5 個小 component,自己用 Tailwind 寫 ~50 行就好
+- shadcn 的價值在於「**copy-paste 你可控的 component code**」— 我們直接寫等同效果
+- **不引入「Radix Primitives + React 19 相容性問題」這類額外風險**
+- 將來真需要(M8 dashboard 的 chart / dialog)再加
+
+#### 為什麼手寫 types,不從 OpenAPI codegen?
+- 對小規模 schema 來說,**hand-written 更容易在 PR 中 review**
+- FastAPI 的 `openapi.json` 確實能用 `openapi-typescript` 跑 codegen,但要引入 build step、設定 CI 同步,還會生出 verbose 型別
+- M8 會把 codegen 加成 pre-commit hook(確保 frontend/types 跟 backend schema 不漂移)— 那才值得引入
+
+#### 為什麼 `cache: "no-store"` 在所有 fetch?
+- Next.js 16 預設 fetch 會被 server-side cache(static page)— 不適合 live data
+- Timeline 必須每次刷新都看新資料
+- `cache: "no-store"` 是 escape hatch,跟 React Server Component 的預設行為 opt-out
+- 真的要 server cache(future:LLM 摘要不變的 event 列表)再用 `revalidateTag`
+
+#### 為什麼 timeline 用 `"use client"` + TanStack Query,不用純 server component?
+- 純 server component(`async function Page() { const data = await fetch(...) }`)更省 JS bundle
+- 但 TanStack Query 給我們:
+  - 自動 stale-while-revalidate(tab 重新 focus 自動 refetch)
+  - Cache 命中後 detail page click 瞬間出現(預載)
+  - 為 M8 的 polling / live update 鋪路
+- Trade-off:多 ~30KB JS bundle。值得換 UX
+
+#### 為什麼 `/events/[id]` 拆成 server `page.tsx` + client `client.tsx`?
+- Next.js 16 要 `await params` 是 server-side 行為
+- TanStack Query hooks 要在 client component
+- 拆兩個檔案:server 只負責 `await params` 轉資料,client 做 hooks
+- 這是 Next.js 16 upgrade guide 直接推薦的 pattern
+- 替代方案:全 client + `use(params)` unwrap promise — 也能跑,但 server 拆出來 0 JS bundle 給 layout 部分
+
+#### 為什麼 CORS allowlist 而不是 `["*"]`?
+- Spec §16 禁止 production 用 `*`
+- 開發階段不嚴格但養成習慣最重要
+- Cookie / credential 跨 origin 時 `["*"]` 也不能搭 `allow_credentials=True`(瀏覽器擋)
+- M9 上 Vercel 後 allowlist 加上 production / preview URL,這個 pattern 直接用
+
+---
+
+### 學到的觀念
+
+1. **「Server Component / Client Component」的拆法是 Next.js App Router 的核心心智模型**:
+   - Server:可以 await DB / API,沒 JS bundle
+   - Client:可以用 hook 跟瀏覽器 API,要付 bundle 成本
+   - 邊界用 `"use client"` directive 標記
+   - 拆得好 = 速度快 + bundle 小
+
+2. **Next.js 16 的 Async Request APIs 是長期趨勢**:`params` / `cookies()` / `headers()` 都變 Promise — 為了配合 React Server Component 的 streaming 渲染。短期煩,長期對
+
+3. **TanStack Query 的 `staleTime` 是 cache 策略**:不是「資料活多久」而是「我願意 show 多舊的資料給 user 看」。30s 對 events timeline 剛好
+
+4. **`cache: "no-store"` vs `revalidateTag` vs default**:Next.js 16 的 fetch 預設會被 cache,要顯式 opt-out 給 live data — 容易踩坑
+
+5. **Tailwind v4 跟 v3 設定不同**:v4 用 `@import` + CSS,v3 用 `tailwind.config.js`。我們是 v4,所以沒 `tailwind.config.ts`(放在 globals.css 內)
+
+6. **`"use client"` 是檔案級的,不是函式級**:整個檔案 client,或整個檔案 server(可以 import client component)
+
+7. **`useState(() => new QueryClient())` 的 lazy init 很重要**:不寫 `() =>` 每次 render 都 new 一次 → 整個 cache 重設 → 抓資料反覆閃爍
+
+---
+
+### 面試可能會被問到
+
+**Q1: 為什麼選 TanStack Query 而不是 SWR / Redux Query?**
+- **TanStack Query**:functional API、強型別、cache 控制最精細、UI library agnostic
+- **SWR**:Vercel 出品,跟 Next.js 配合好,但 API 較陽春
+- **Redux Toolkit Query**:跟 Redux 綁定,過度為 backed by store 設計
+- 我選 TanStack:**型別最舒服 + 文件最完整 + 跟 React Query 同源**(同一 lib,只是改名)— 招聘 JD 點名最高
+
+**Q2: 為什麼 timeline 不用 Server Component?省 JS bundle 不是更好?**
+- Trade-off:純 server 確實少 ~30KB JS,但缺:
+  - 沒有 client-side cache(每次 navigate 都重抓)
+  - 沒有 tab focus refetch(資料過期看不到提示)
+  - 沒辦法做 future 的 live update(WebSocket)
+- 對「**事件列表這種 dynamic data + 預期 polling**」場景,client + TanStack 更對
+
+**Q3: `params` 在 Next.js 16 變 Promise,你怎麼處理?**
+- Server component:`async function Page({ params }) { const { id } = await params; }`
+- Client component:`use(params)` unwrap(React 的 `use` hook)
+- 我們拆成 server wrapper(`await params`) + client child — 最乾淨
+
+**Q4: 你的 type 為什麼手寫不用 codegen?**
+- 小規模時 hand-written 更易 PR review,structure 一目瞭然
+- M8 會引入 `openapi-typescript` codegen 在 CI 跑,防止 frontend / backend type drift
+- 真實大型專案會 day-1 就 codegen,我們是 staged 增加複雜度
+
+**Q5: CORS allow_origins 為什麼是 list 不是 `"*"`?**
+- `"*"` 配 `allow_credentials=True` 瀏覽器會擋(規範限制)
+- 即使不用 cookie,具名 allowlist 更安全 — 別的網站不能伺機從 user 瀏覽器調 API
+- production 強制具名,dev 養習慣
+
+**Q6: 為什麼 `useState(() => new QueryClient(...))` 用 lazy init?**
+- `useState(value)` 跟 `useState(() => value)` 的差別:
+  - 前者每次 render 都計算 value(浪費)
+  - 後者只 first render 算
+- `new QueryClient()` 不便宜(初始化 cache 結構)
+- 沒 lazy init:HMR / Strict Mode 雙渲染時 client 會被 dup 出兩個,cache 互不知道 → 看起來像 cache 全失效
+
+---
+
+### 驗收狀態
+
+- [x] `npm run dev` 起 Next.js 16 + Turbopack on :3000
+- [x] `npm run build` production build 通過(TS + Tailwind 沒 error,4 routes 生成)
+- [x] Backend 81 個 pytest 仍綠(CORS 加進去沒影響)
+- [x] Frontend curl 回 200,HTML 含 `EventSense` brand + `LLM predictions` section header
+- [x] `OPTIONS` preflight 含 `access-control-allow-origin: http://localhost:3000`(CORS 正確)
+- [x] 4 個 UI 元件 + 2 pages + Provider + types + API client 全部就位
+
+### 真實 UI 行為(瀏覽 http://localhost:3000)
+
+```
+首頁 /:
+  ┌─────────────────────────────────────────┐
+  │ EventSense              events→...      │  ← nav
+  ├─────────────────────────────────────────┤
+  │ Recent events                  19 total │
+  │ ┌─────────────────────────────────────┐ │
+  │ │ [FRED] ECONOMIC_RELEASE   2 days ago│ │
+  │ │ CPI release for 2026-04-01: 332.407│ │
+  │ └─────────────────────────────────────┘ │
+  │ ┌─────────────────────────────────────┐ │
+  │ │ [SEC_EDGAR] 8K_FILING     5 days ago│ │
+  │ │ AMZN 8-K filed 2026-05-22 ...      │ │
+  │ │ AMZN                                │ │
+  │ └─────────────────────────────────────┘ │
+  │ ...                                     │
+  └─────────────────────────────────────────┘
+
+/events/<id>:
+  ← Back to timeline
+  ┌─────────────────────────────────────────┐
+  │ [SEC_EDGAR] 8K_FILING     May 22 14:30  │
+  │ AMZN 8-K filed 2026-05-22 (items: 5.07)│
+  │ Status: ANALYZED · External ID: ...    │
+  │ [AMZN]                                  │
+  └─────────────────────────────────────────┘
+  
+  LLM predictions (1)       Total cost $0.00015
+  ┌─────────────────────────────────────────┐
+  │ AMZN  ▲ BULLISH  HIGH      conf 80%    │
+  │ Significant corporate developments...   │
+  │ gpt-4o-mini · prompt v1 · $0.00015     │
+  └─────────────────────────────────────────┘
+  
+  ▶ Raw payload (click to expand)
+```
 
 ---
 
