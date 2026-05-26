@@ -1,8 +1,14 @@
 @import "tailwindcss";
 
+/* Light theme only for now. We don't try to auto-flip on system dark mode
+ * because half-dark-half-light is worse than either committed look — our
+ * Tailwind classes (bg-white / text-gray-900) don't have dark: variants yet.
+ * A real dark theme will come in a later milestone. */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  color-scheme: light;
+  --background: #f6f7fb;
+  --foreground: #0f172a;
 }
 
 @theme inline {
@@ -12,15 +18,17 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
+html,
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Subtle radial gradient on the body — gives the flat gray more depth
+ * without distracting from content. */
+body {
+  background-image:
+    radial-gradient(circle at 0% 0%, rgba(99, 102, 241, 0.06), transparent 40%),
+    radial-gradient(circle at 100% 0%, rgba(244, 114, 182, 0.05), transparent 40%);
+  background-attachment: fixed;
 }

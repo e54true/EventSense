@@ -29,21 +29,38 @@ export default function RootLayout({
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col bg-gray-50">
+      <body className="min-h-full flex flex-col font-sans text-slate-900">
         <QueryProvider>
-          <header className="border-b border-gray-200 bg-white">
-            <div className="mx-auto max-w-4xl px-4 py-3 flex items-center justify-between">
-              <Link href="/" className="text-lg font-semibold text-gray-900">
+          <header className="sticky top-0 z-10 border-b border-slate-200/80 bg-white/80 backdrop-blur">
+            <div className="mx-auto max-w-5xl px-6 py-4 flex items-center justify-between">
+              <Link
+                href="/"
+                className="flex items-center gap-2 text-base font-semibold text-slate-900"
+              >
+                <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-pink-500 text-white text-xs font-bold shadow-sm">
+                  ES
+                </span>
                 EventSense
               </Link>
-              <span className="text-xs text-gray-500">
-                events → LLM predictions → outcomes
-              </span>
+              <nav className="flex items-center gap-5 text-sm text-slate-600">
+                <Link href="/" className="hover:text-slate-900 transition-colors">
+                  Timeline
+                </Link>
+                <span className="hidden sm:inline text-xs text-slate-400">
+                  events&nbsp;→&nbsp;LLM&nbsp;predictions&nbsp;→&nbsp;outcomes
+                </span>
+              </nav>
             </div>
           </header>
-          <main className="mx-auto max-w-4xl w-full px-4 py-6 flex-1">
+          <main className="mx-auto max-w-5xl w-full px-6 py-8 flex-1">
             {children}
           </main>
+          <footer className="border-t border-slate-200/80 bg-white/40">
+            <div className="mx-auto max-w-5xl px-6 py-4 text-xs text-slate-500 flex justify-between">
+              <span>EventSense · M7 prototype</span>
+              <span className="font-mono">localhost:3000 → :8000</span>
+            </div>
+          </footer>
         </QueryProvider>
       </body>
     </html>

@@ -12,26 +12,30 @@ export function EventCard({ event }: { event: EventRead }) {
   return (
     <Link
       href={`/events/${event.id}`}
-      className="block rounded-lg border border-gray-200 bg-white p-4 shadow-sm transition hover:border-gray-300 hover:shadow-md"
+      className="group block rounded-xl border border-slate-200 bg-white p-5 shadow-sm transition-all hover:border-slate-300 hover:shadow-md hover:-translate-y-0.5"
     >
-      <div className="flex items-center justify-between gap-3 mb-2">
+      <div className="flex items-center justify-between gap-3 mb-3">
         <div className="flex items-center gap-2">
           <SourceBadge source={event.source} />
-          <span className="text-xs text-gray-500">{event.event_type}</span>
+          <span className="text-xs font-medium text-slate-500 tracking-wide">
+            {event.event_type.replace(/_/g, " ")}
+          </span>
         </div>
-        <span className="text-xs text-gray-500" title={event.published_at}>
+        <span className="text-xs text-slate-500 tabular-nums" title={event.published_at}>
           {publishedAgo}
         </span>
       </div>
-      <h3 className="text-sm font-medium text-gray-900 line-clamp-2">
+
+      <h3 className="text-sm font-semibold text-slate-900 leading-snug line-clamp-2 group-hover:text-indigo-700 transition-colors">
         {event.title}
       </h3>
+
       {event.affected_tickers.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1">
+        <div className="mt-3 flex flex-wrap gap-1.5">
           {event.affected_tickers.map((t) => (
             <span
               key={t}
-              className="inline-flex rounded bg-gray-100 px-1.5 py-0.5 text-xs font-mono text-gray-700"
+              className="inline-flex rounded-md bg-slate-100 px-2 py-0.5 text-xs font-mono font-medium text-slate-700"
             >
               {t}
             </span>
