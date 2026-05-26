@@ -53,7 +53,7 @@ async def _process_one(db: AsyncSession, event: Event, spend_today: float) -> in
 
     try:
         result = await clients.analyze_event(choice, prompt)
-    except Exception as exc:  # noqa: BLE001 — LLM SDK raises many types; we want them all
+    except Exception as exc:
         log.warning("analyzer.llm_failed", error=str(exc), error_type=type(exc).__name__)
         event.status = EventStatus.FAILED
         event.failure_reason = f"LLM call failed: {type(exc).__name__}: {exc}"[:1000]

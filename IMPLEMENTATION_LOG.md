@@ -1259,10 +1259,228 @@ FRED (ECONOMIC_RELEASE):
 
 ## Milestone 6 — Validation loop
 
-> **狀態**:⏳ 未開始
-> **目標**:Validator worker,outcome 計算,`/accuracy` endpoint。
+> **狀態**:✅ 完成
+> **目標**:新 `prediction_outcomes` 表 + Validator worker → 把「事件 → 預測 → 真實結果」的閉環收起來。每個 prediction 在 +1h / +24h / +7d 三個時間窗自動計算 excess return + alignment。`GET /accuracy` 查整體準確率。
 
-_(待實作)_
+### 做了什麼(依檔案分類)
+
+#### `backend/app/db/models.py`(加 model + enum)
+- 新 `OutcomeWindow(StrEnum)`:`H1="1h"`、`H24="24h"`、`D7="7d"`
+- 新 `PredictionOutcome` model 對應 spec §6.4:
+  - `id: UUID PK`(低頻表)
+  - `prediction_id` FK,`ondelete=CASCADE` — 刪 prediction 自動清 outcome
+  - `window: OutcomeWindow` enum
+  - `baseline_price` / `end_price: Numeric(12,4)` — 跟價格表一致
+  - `ticker_return` / `spy_return` / `excess_return: Float` — 純數字,不再做金錢計算
+  - `aligned: Boolean` — 預測對不對的判定
+  - **`UniqueConstraint("prediction_id", "window")`** — idempotency 兜底
+- `Prediction` 加 `outcomes` relationship + `lazy="raise"`
+
+#### `backend/alembic/versions/21601dff6066_add_prediction_outcomes_table.py`
+- autogenerate 產生
+- 一個 ENUM type(outcome_window)、兩個 index(by prediction_id, by validated_at)
+
+#### `backend/app/services/alignment.py`(新)— **純函式邏輯,最高測試覆蓋**
+- `ticker_return(baseline, end)` — `(end - baseline) / baseline`
+  - baseline ≤ 0 → raise(防止 div by zero 神祕 inf)
+- `excess_return(ticker_ret, spy_ret)` — `ticker_ret - spy_ret`
+- `is_aligned(direction, excess)`:
+  - BULLISH + excess > 0 → True
+  - BEARISH + excess < 0 → True
+  - NEUTRAL + `|excess| < 0.005` → True(spec §6.4 神祕的 NEUTRAL 0.5% 閾值)
+  - 其他 → False
+- 全部沒 DB、沒 mock,16 個 unit test 全部 trivial pass
+
+#### `backend/app/services/validator.py`(新)— M6 心臟
+- `validate_pending(db, batch_size=50)`:
+  1. 算 candidate `(prediction, window)` pairs:`predicted_at + window + 15min buffer <= now()` 且還沒有對應 outcome row
+  2. 對每個 pair 開**獨立 transient session**,跟 M5 analyzer 一樣的 queue-table pattern + `FOR UPDATE SKIP LOCKED`
+  3. 查 baseline + end 兩個價格(自己 + SPY)
+  4. 缺價 → defer(下次 retry,不寫假資料)
+  5. 算 returns,呼叫 `is_aligned`,寫 outcome
+- 三個 tunable 常數:
+  - `_PRICE_AVAILABILITY_BUFFER = 15min`(等價格 worker 寫完)
+  - `_WINDOW_DURATIONS` 對應 1h/24h/7d
+  - `_PRICE_LOOKBACK_TOLERANCE`:1h 給 1h、24h 給 24h、7d 給 4天(跨週末)
+- **`_price_at_or_before(ticker, target, tolerance, must_be_after)`**:
+  - 找 `snapshot_at <= target` 且 `snapshot_at >= target - tolerance` 的最新一筆
+  - `must_be_after` 是 end-price 才設的安全鎖(下面講 bug)
+
+#### `backend/app/tasks/validators.py`(新)
+- `validate_pending_task` Celery task,5-min schedule
+- 路由到 `validate_queue`(新 queue)
+
+#### `backend/app/workers/celery_app.py`(改)
+- include `app.tasks.validators`
+- task_routes 加 `validate_queue`
+- Beat schedule 加 `validator-5min`
+
+#### `docker-compose.yml`(改)
+- fetch worker 改 listen `-Q fetch_queue,validate_queue`(共享 worker pool,validate 也是 I/O bound)
+- 比另外起一個 validator container 簡單,需要時可拆
+
+#### `backend/app/api/routes/accuracy.py`(新)
+- `GET /api/v1/accuracy` 支援 4 個 query filter:`source` / `ticker` / `window` / `model`
+- SQL:`SELECT COUNT(*), SUM(aligned::int) FROM outcomes JOIN predictions JOIN events`
+- Response 結構:`{total_outcomes, aligned_count, alignment_rate, filters}`
+- **`alignment_rate=None` when total=0** — 不要回 0% 騙人(沒資料 ≠ 全錯)
+- 把 ticker 自動 .upper() 接受大小寫
+
+#### 測試(57 → 81 個)
+- `test_alignment.py`(16 unit):
+  - `ticker_return` 正/負/零/baseline ≤ 0
+  - `excess_return` 三種市場情境
+  - `is_aligned` 各 direction × 各 excess 符號 + NEUTRAL 邊界(`= threshold` 不算 aligned)
+- `test_validator.py`(5 integration):
+  - 25h 前預測 + 雙時間點價格 → 寫 24h outcome,return 計算正確,aligned=True
+  - 30min 前預測(1h 還沒到)→ candidates=0,沒寫
+  - 缺 end price → deferred,沒寫假資料
+  - 重跑 idempotent(unique constraint 兜底)
+  - BEARISH + ticker 跑輸大盤 → aligned=True
+
+---
+
+### 過程中踩到的坑
+
+#### 坑 1:tolerance 太鬆讓 baseline 自己當 end_price
+- **症狀**:integration test `test_missing_price_defers_not_writes` 預期 `deferred ≥ 1`,實際 `deferred=0, written=2`
+- **根因**:test 只 seed 了 baseline 時間的價格(沒有 end 時間)。validator 查 end_price 時,因為 tolerance 24h,接受了 24h 前的價格(就是 baseline)。結果 `ticker_return = (baseline - baseline) / baseline = 0`,寫了個假的 0% outcome
+- **修法**:`_price_at_or_before` 加 `must_be_after` 參數,end-price 查詢時要求 `snapshot_at > predicted_at`。Baseline 不傳這個 → 跟以前一樣寬鬆
+- **教訓**:**寫測試的時候腦袋裡要有「壞情境」 — 沒這個 test 寫,production 就出現假 outcome**
+
+#### 坑 2:Postgres 不能 `bool → float` 直接 cast
+- **症狀**:`GET /accuracy` 回 500 — `cannot cast type boolean to double precision`
+- **根因**:`func.sum(cast(aligned, Float))` — PG 不允許 bool 直接到 float
+- **修法**:`cast(aligned, Integer)` 中間轉一道,再讓 Python 做最後除法
+- **教訓**:**SQLAlchemy 抽象層下的 SQL 還是有 DB-specific 限制,跨 DB 寫法要試**
+
+#### 坑 3:Demo 資料時區/週末陷阱
+- 跑 e2e 時把 predictions backdate 到 `NOW - 3 days`
+- 結果發現 3 天前 = 2026-05-23 = **週六**(無交易資料)
+- 1h 跟 24h 窗都 defer(找不到當時的價格),只有 D7 窗成功(tolerance 4 天反向找到今天的資料)
+- **教訓**:**真實金融資料不是連續的**,Demo 要選平日或包好跨週末邏輯
+
+---
+
+### 為什麼這樣選(關鍵決策)
+
+#### 為什麼用 DB polling 而不是 Celery ETA?
+- Spec §11 M6 寫「Schedule outcomes at +1h, +24h, +7d using Celery ETA」
+- 但 spec §0.4 / §8 又強調 DB-driven state machine,不要 Celery chain
+- 衝突時我選 DB polling,**理由**:
+  - Celery ETA 任務存在 broker — broker 重啟、worker pool 改、queue 名字變,**都會默默丟失任務**
+  - DB polling 的 source of truth 是 `predicted_at` + outcome row 存在與否 — restart 任何東西,recompute 都對
+  - 「**任何時候系統重啟,DB 就是當前狀態**」這個 invariant 很值錢
+- 代價:輪詢有 worst-case 5 min 延遲(不該重要,outcome 本來就有 ≥1h 延遲)
+
+#### 為什麼 outcome 表用 `(prediction_id, window)` unique 不是 PK?
+- PK 用 UUID 是 ORM relation 跟 API URL 的 stable identifier
+- Unique constraint 是業務邏輯:同一 prediction 同一 window 只能有一個 outcome
+- 兩個分開 → 業務 unique 改了不影響 reference
+
+#### 為什麼 NEUTRAL 用「絕對值 < 0.5%」當對齊條件?
+- BULLISH/BEARISH 是「**方向有偏好**」,只看 excess return 正負就好
+- NEUTRAL 是「**沒大方向**」,如果實際大漲或大跌就是預測錯了
+- 0.5% 是 spec §6.4 給的閾值 — 直覺上「一天波動 < 0.5%」算「沒大事」
+- 用 `<` 不是 `<=`,邊界值不算對齊(保守)— test 有 cover 邊界 case
+
+#### 為什麼 fetch worker 也聽 validate_queue,不開新 worker?
+- 兩者都 I/O bound(DB query + INSERT)
+- Validate 沒外部 API call,比 fetch 還輕
+- 共享 worker pool 一起搶 — 沒有 starvation 風險
+- 將來真需要分,改 docker-compose 一行就拆出來
+- **「需要時再拆」勝於「先過度設計」**
+
+#### 為什麼 `must_be_after` 只給 end-price 不給 baseline?
+- Baseline 在 prediction 之前的近期數據就是合法的(預測作出時的當下價格)
+- End-price 必須 strict 在 prediction 之後 — 不然就 cherry-pick 同一筆 row 當 baseline + end
+- 不對稱設計 ≠ 不一致 — 反映了業務語義不對稱
+
+#### `alignment_rate` 為什麼用 `float | None` 不是 `0.0`?
+- 0 outcomes 時回 0.0 → user 看到「0% accuracy」會誤以為全錯
+- None 明確表示「沒有資料」,前端可以顯示「N/A」
+- API 設計通則:**沒資料 ≠ 全錯**,要區分
+
+---
+
+### 學到的觀念
+
+1. **`predict → outcome` 是 ML 系統閉環的價值所在**:沒有 outcome 表,你的 LLM 永遠不知道對不對。**這個閉環是 ML 系統跟 toy demo 的分界線**
+
+2. **Excess return 是金融 alpha 的標準量測**:單看 ticker 漲跌沒意義,要扣掉大盤帶動。alpha 才是真技術價值
+
+3. **「Defer」是合法狀態**:資料還沒到,別寫假東西。Defer + retry > 寫錯。idempotent + unique constraint 讓 retry 安全
+
+4. **時區 + 週末是時間序列軟體永遠的坑**:預設假設「資料連續」會出包。Tolerance / lookback 設計就是吸收這種離散性
+
+5. **`bool::int` 是跨 DB 慣用 cast 路徑**:SUM(bool) 在某些 DB 行某些 DB 不行,先轉 int 最 portable
+
+---
+
+### 面試可能會被問到
+
+**Q1: 為什麼用 polling 而不是 Celery ETA?spec 不是說 ETA 嗎?**
+- 我覺得 spec 兩處互相衝突 — §11 提 ETA、§8 強調 DB-driven state
+- 我選 DB polling 因為 recoverability — broker / worker / queue config 改了都不丟資料
+- 代價是 ~5 min 延遲,但 outcome 本來就 ≥1h 才能算,毫無影響
+- 真正 production 級 ETA 要搭 Celery's persistent scheduler 或 Temporal — 增加 dep 跟複雜度
+
+**Q2: NEUTRAL 的閾值為什麼 0.5%?**
+- spec 給的數字,我接受
+- 直覺解釋:S&P 500 日均波動 ~0.7%,< 0.5% 算「相對平靜」
+- 真實生產系統可能要 vol-adjusted(高波動股票閾值放大)
+- 把閾值放在 alignment.py 的 module constant — 之後要調很方便
+
+**Q3: 為什麼 outcome 不 store summary fields like "absolute return"?**
+- 不要 store derived data — 永遠有不一致風險(算法改了 stored data 不對)
+- store 原料(prices + returns),需要時用 query 算 summary
+- exception:**aligned bool** 我們 store — 因為它是 alignment function 的結果,跟 prompt_version 一樣是「**那一刻決定的判定**」,需要保留歷史
+
+**Q4: 如果 prediction_outcomes 表變 100M 行怎麼辦?**
+- 短期:用 `validated_at` 上的 index 對「最近 24h 的 outcomes」加速 dashboard
+- 中期:partition by month — 按 `validated_at` 自動拆 partition,舊資料 drop 整個 partition 即可
+- 長期:把 cold 資料移到 OLAP(BigQuery / Snowflake),postgres 只留近 30 天 hot data
+
+**Q5: `excess_return` 計算為什麼用 SPY 不用 QQQ?**
+- SPY 追蹤 S&P 500,代表廣義美股
+- QQQ 追蹤 Nasdaq-100(科技股為主),代表 sub-market
+- 我們 watchlist 7 個都是科技股 + SPY + QQQ — 如果用 QQQ 當基準,NVDA 跟 QQQ 高度相關,excess return 永遠很小
+- 用 SPY 才能看出「**科技股相對全市場的超額表現**」 — 這是 alpha 的傳統定義
+
+**Q6: 假如同一個 prediction 的 1h / 24h / 7d outcomes 結果不一致(1h 對、24h 錯)怎麼解讀?**
+- 完全可能 — short-term 跟 medium-term reaction 不同
+- 例如 8-K 出來瞬間 -1%(BEARISH 對 1h),但 24h 後反彈 +2%(BEARISH 錯 24h)
+- 我們**分開存**這 3 個 outcome,讓 dashboard 可以看「**這個 model 在哪個 window 最準**」
+- 真實 trading 應用會發現:有些 model 適合短線、有些長線
+
+---
+
+### 驗收狀態
+
+- [x] 5 個 service healthy(沒新增 container,fetch worker 多 listen validate_queue)
+- [x] Worker 註冊 7 個 task(fetch 4 + prices 1 + analyzers 1 + validators 1)
+- [x] Beat 載入 7 個 schedule
+- [x] 81 個 pytest 全綠(M5 的 57 → M6 的 81)
+- [x] 對 backdated prediction 跑 validator → 5 個 D7 outcomes 寫入,alignment 數學正確
+- [x] `GET /api/v1/accuracy` 回 `{total: 5, aligned: 2, alignment_rate: 0.4}`
+- [x] Filter by ticker=SPY → `{total: 3, aligned: 2, rate: 0.667}`
+- [x] Filter by window=7d → 跟 overall 一致(因為目前只有 D7 outcomes)
+
+---
+
+### 真實 outcome 範例
+
+```
+ticker  direction   window  ticker_ret  spy_ret  excess  aligned
+─────────────────────────────────────────────────────────────────
+QQQ     NEUTRAL     D7      0.0155      0.0094   0.0061   FALSE  ← NEUTRAL 但實際漲了 1.55%
+QQQ     BEARISH     D7      0.0155      0.0094   0.0061   FALSE  ← BEARISH 但 excess 是正的
+SPY     NEUTRAL     D7      0.0094      0.0094   0.0000   TRUE   ← SPY vs SPY = 0,NEUTRAL 對
+SPY     BEARISH     D7      0.0094      0.0094   0.0000   FALSE  ← BEARISH 但 excess = 0
+SPY     NEUTRAL     D7      0.0094      0.0094   0.0000   TRUE
+```
+
+注意:SPY 對 SPY 的 excess return 永遠是 0(同一個 ticker)— 我們把 SPY 預測也存進去當 sanity check,**alignment 邏輯對 SPY 永遠只有 NEUTRAL 會 aligned**。這是 model router 的次要學習點:讓 LLM 對 SPY 出 BULLISH/BEARISH 預測沒意義,M5 prompt 之後可以加 「不要對 benchmark ETF 出方向預測」guidance(v2 prompt 候選)。
 
 ---
 

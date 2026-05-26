@@ -36,7 +36,12 @@ celery_app = Celery(
     broker=settings.redis_url,
     backend=settings.redis_url,
     # Auto-discover tasks in these modules so we don't have to import them by hand.
-    include=["app.tasks.fetchers", "app.tasks.prices", "app.tasks.analyzers"],
+    include=[
+        "app.tasks.fetchers",
+        "app.tasks.prices",
+        "app.tasks.analyzers",
+        "app.tasks.validators",
+    ],
 )
 
 celery_app.conf.update(
@@ -60,6 +65,9 @@ celery_app.conf.task_routes = {
     "app.tasks.fetchers.*": {"queue": "fetch_queue"},
     "app.tasks.prices.*": {"queue": "fetch_queue"},  # prices are I/O-bound like fetchers
     "app.tasks.analyzers.*": {"queue": "analyze_queue"},
+    # Validators have their own queue name (per spec §8) but the existing
+    # fetch worker also listens to it — see docker-compose.yml. Keeps queue
+    # naming clean for future scaling without sprouting more containers now.
     "app.tasks.validators.*": {"queue": "validate_queue"},
 }
 
@@ -105,5 +113,12 @@ celery_app.conf.beat_schedule = {
         # gets predictions within 2 minutes" — 1-min cadence comfortably meets it.
         # No-op (immediate return) when nothing pending, so cost is trivial.
         "schedule": crontab(minute="*"),
+    },
+    "validator-5min": {
+        "task": "app.tasks.validators.validate_pending_task",
+        # Outcomes naturally lag: 1h window can't be filled before now-1h. There's
+        # no urgency to validate immediately — 5-min cadence keeps load light and
+        # still backfills outcomes within a tight SLA.
+        "schedule": crontab(minute="*/5"),
     },
 }

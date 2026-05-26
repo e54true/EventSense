@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import (
     ARRAY,
     BigInteger,
+    Boolean,
     DateTime,
     Enum,
     Float,
@@ -47,6 +48,14 @@ class PredictionMagnitude(StrEnum):
     LOW = "LOW"
     MEDIUM = "MEDIUM"
     HIGH = "HIGH"
+
+
+class OutcomeWindow(StrEnum):
+    """Time horizons over which we measure prediction accuracy."""
+
+    H1 = "1h"
+    H24 = "24h"
+    D7 = "7d"
 
 
 class Event(Base, TimestampMixin):
@@ -145,6 +154,57 @@ class Prediction(Base, TimestampMixin):
 
     # Backref so /events/{id} can eager-load predictions in one query.
     event: Mapped["Event"] = relationship(back_populates="predictions")
+    outcomes: Mapped[list["PredictionOutcome"]] = relationship(
+        back_populates="prediction",
+        cascade="all, delete-orphan",
+        lazy="raise",
+    )
+
+
+class PredictionOutcome(Base, TimestampMixin):
+    """The realized result of a Prediction at one of (1h, 24h, 7d) post-prediction.
+
+    Schema per EventSense_Spec §6.4. One row per (prediction, window). The
+    UNIQUE constraint is the safety net for idempotency — the validator can
+    safely re-run without producing duplicate outcomes.
+
+    Returns are stored as plain float (not Decimal) because they're already
+    derived from price ratios — precision loss vs. baseline_price/end_price is
+    bounded by their Numeric(12,4) source. We're not summing them into money.
+    """
+
+    __tablename__ = "prediction_outcomes"
+    __table_args__ = (
+        UniqueConstraint("prediction_id", "window", name="uq_outcomes_prediction_window"),
+        Index("ix_outcomes_prediction", "prediction_id"),
+        Index("ix_outcomes_validated_at", "validated_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    prediction_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("predictions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    window: Mapped[OutcomeWindow] = mapped_column(
+        Enum(OutcomeWindow, name="outcome_window"),
+        nullable=False,
+    )
+    baseline_price: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    end_price: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    ticker_return: Mapped[float] = mapped_column(Float, nullable=False)
+    spy_return: Mapped[float] = mapped_column(Float, nullable=False)
+    excess_return: Mapped[float] = mapped_column(Float, nullable=False)
+    # True if the sign of excess_return matched the prediction direction.
+    # NEUTRAL is treated specially — see app.services.alignment.
+    aligned: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    validated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    prediction: Mapped["Prediction"] = relationship(back_populates="outcomes")
 
 
 class PriceSnapshot(Base):

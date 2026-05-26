@@ -80,9 +80,10 @@ services:
       # Don't start worker until backend has run migrations (backend has the alembic step).
       backend:
         condition: service_started
-    # -Q fetch_queue restricts this worker to the fetch queue so a slow LLM call
-    # later won't starve fetcher tasks. Concurrency 4 is plenty for IO-bound work.
-    command: celery -A app.workers.celery_app worker --loglevel=info -Q fetch_queue --concurrency=4
+    # Listens to fetch_queue + validate_queue. Both are IO-bound (HTTP / DB),
+    # safe to share concurrency budget. analyze_queue stays isolated on its
+    # own worker so slow LLM calls don't starve quick fetchers/validators.
+    command: celery -A app.workers.celery_app worker --loglevel=info -Q fetch_queue,validate_queue --concurrency=4
 
   analyzer:
     build:
