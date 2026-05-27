@@ -1,0 +1,11 @@
+# Per-service start commands. Railway / Heroku / Render read this file to know
+# what to run for each "process type". You point each Railway *service* at one
+# of these names, all sharing the same Dockerfile image.
+#
+# Migration: `alembic upgrade head` is wrapped into the backend command so the
+# DB is at the latest schema before the API starts serving traffic.
+
+backend: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+worker:   celery -A app.workers.celery_app worker --loglevel=info -Q fetch_queue,validate_queue --concurrency=4
+analyzer: celery -A app.workers.celery_app worker --loglevel=info -Q analyze_queue --concurrency=2
+beat:     celery -A app.workers.celery_app beat --loglevel=info
