@@ -46,6 +46,12 @@ export default function RootLayout({
                 <Link href="/" className="hover:text-slate-900 transition-colors">
                   Timeline
                 </Link>
+                <Link
+                  href="/dashboard"
+                  className="hover:text-slate-900 transition-colors"
+                >
+                  Dashboard
+                </Link>
                 <span className="hidden sm:inline text-xs text-slate-400">
                   events&nbsp;→&nbsp;LLM&nbsp;predictions&nbsp;→&nbsp;outcomes
                 </span>

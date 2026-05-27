@@ -46,6 +46,35 @@ export interface PredictionRead {
   created_at: string;
 }
 
+export interface OutcomeRead {
+  id: string;
+  prediction_id: string;
+  window: OutcomeWindow;
+  baseline_price: string; // Decimal arrives as string
+  end_price: string;
+  ticker_return: number;
+  spy_return: number;
+  excess_return: number;
+  aligned: boolean;
+  validated_at: string;
+}
+
+export interface PredictionWithOutcomes extends PredictionRead {
+  outcomes: OutcomeRead[];
+}
+
+export interface PricePoint {
+  snapshot_at: string;
+  price: string; // Decimal as string
+}
+
+export interface PriceRangeResponse {
+  ticker: string;
+  points: PricePoint[];
+  from_at: string;
+  to_at: string;
+}
+
 export interface PaginationMeta {
   page: number;
   per_page: number;
@@ -59,7 +88,7 @@ export interface EventListResponse {
 
 export interface EventDetailResponse {
   data: EventRead;
-  predictions: PredictionRead[];
+  predictions: PredictionWithOutcomes[];
 }
 
 export interface AccuracyResponse {

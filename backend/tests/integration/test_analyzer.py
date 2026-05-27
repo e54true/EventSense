@@ -28,6 +28,7 @@ def _llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LLM_DAILY_COST_CAP_USD", "100.0")
     monkeypatch.setenv("DEFAULT_TICKERS", "AAPL,MSFT,SPY")
     from app.config.settings import get_settings as _get
+
     _get.cache_clear()
 
 
@@ -82,7 +83,9 @@ def _fake_analysis(ticker: str = "AAPL") -> LLMCallResult:
     )
 
 
-async def test_fetched_event_transitions_to_analyzed_with_predictions(clean_db: AsyncSession) -> None:
+async def test_fetched_event_transitions_to_analyzed_with_predictions(
+    clean_db: AsyncSession,
+) -> None:
     event = await _seed_event(clean_db, "AAPL")
 
     with patch(
@@ -132,14 +135,28 @@ async def test_hallucinated_ticker_is_dropped(clean_db: AsyncSession) -> None:
         analysis=EventAnalysis(
             summary="x",
             impacts=[
-                TickerImpact(ticker="AAPL", direction="BULLISH", magnitude="LOW", confidence=0.5, reasoning="ok"),
-                TickerImpact(ticker="HALUC", direction="BEARISH", magnitude="HIGH", confidence=0.9, reasoning="bad"),
+                TickerImpact(
+                    ticker="AAPL",
+                    direction="BULLISH",
+                    magnitude="LOW",
+                    confidence=0.5,
+                    reasoning="ok",
+                ),
+                TickerImpact(
+                    ticker="HALUC",
+                    direction="BEARISH",
+                    magnitude="HIGH",
+                    confidence=0.9,
+                    reasoning="bad",
+                ),
             ],
         ),
         prompt_tokens=500,
         completion_tokens=200,
     )
-    with patch("app.services.analyzer.clients.analyze_event", new=AsyncMock(return_value=bad_analysis)):
+    with patch(
+        "app.services.analyzer.clients.analyze_event", new=AsyncMock(return_value=bad_analysis)
+    ):
         result = await analyze_pending(clean_db, batch_size=10)
 
     assert result["predictions_emitted"] == 1  # HALUC dropped

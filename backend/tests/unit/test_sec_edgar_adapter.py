@@ -80,8 +80,7 @@ def test_parse_recent_8ks_builds_correct_doc_url() -> None:
     }
     [event] = _parse_recent_8ks(submissions, cik="0000320193", ticker="AAPL", cutoff=today)
     assert event.payload["primary_doc_url"] == (
-        "https://www.sec.gov/Archives/edgar/data/320193/"
-        "000032019326000042/aapl-20260415.htm"
+        "https://www.sec.gov/Archives/edgar/data/320193/000032019326000042/aapl-20260415.htm"
     )
 
 

@@ -186,14 +186,14 @@ async def test_existing_outcome_not_rewritten(clean_db: AsyncSession) -> None:
     # present and writes nothing for that pair.
     assert first["outcomes_written"] >= 1
     outcome_count_after_first = await clean_db.scalar(
-        select(func.count()).select_from(PredictionOutcome).where(
-            PredictionOutcome.prediction_id == pred.id
-        )
+        select(func.count())
+        .select_from(PredictionOutcome)
+        .where(PredictionOutcome.prediction_id == pred.id)
     )
     outcome_count_after_second = await clean_db.scalar(
-        select(func.count()).select_from(PredictionOutcome).where(
-            PredictionOutcome.prediction_id == pred.id
-        )
+        select(func.count())
+        .select_from(PredictionOutcome)
+        .where(PredictionOutcome.prediction_id == pred.id)
     )
     assert outcome_count_after_first == outcome_count_after_second
 

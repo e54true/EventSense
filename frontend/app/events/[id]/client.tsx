@@ -8,9 +8,10 @@ import { useQuery } from "@tanstack/react-query";
 import { format, formatDistanceToNow } from "date-fns";
 
 import { api } from "@/lib/api";
-import { EventDetailResponse, PredictionRead } from "@/lib/types";
+import { EventDetailResponse, PredictionWithOutcomes } from "@/lib/types";
 import { SourceBadge } from "@/components/SourceBadge";
 import { PredictionRow } from "@/components/PredictionRow";
+import { PriceChart } from "@/components/PriceChart";
 
 export function EventDetailClient({ id }: { id: string }) {
   const { data, isLoading, error } = useQuery<EventDetailResponse>({
@@ -109,6 +110,24 @@ export function EventDetailClient({ id }: { id: string }) {
         )}
       </header>
 
+      {predictions.length > 0 && (
+        <section className="space-y-3">
+          <h2 className="text-sm font-semibold text-slate-900 uppercase tracking-wide">
+            Price action
+            <span className="ml-2 text-slate-400 normal-case">
+              — predicted_at marked, lines rebased to 100
+            </span>
+          </h2>
+          {predictions.slice(0, 1).map((p) => (
+            <PriceChart
+              key={p.id}
+              ticker={p.ticker}
+              predictedAt={p.predicted_at}
+            />
+          ))}
+        </section>
+      )}
+
       <section>
         <PredictionsHeader
           predictions={predictions}
@@ -151,7 +170,7 @@ function PredictionsHeader({
   predictions,
   totalCost,
 }: {
-  predictions: PredictionRead[];
+  predictions: PredictionWithOutcomes[];
   totalCost: number;
 }) {
   return (

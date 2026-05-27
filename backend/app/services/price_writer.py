@@ -49,12 +49,17 @@ async def persist_prices(db: AsyncSession, ticks: list[PriceTick]) -> int:
             }
             for t in chunk
         ]
-        stmt = pg_insert(PriceSnapshot).values(rows).on_conflict_do_nothing(
-            constraint="uq_price_snapshots_dedup",
+        stmt = (
+            pg_insert(PriceSnapshot)
+            .values(rows)
+            .on_conflict_do_nothing(
+                constraint="uq_price_snapshots_dedup",
+            )
         )
         result = await db.execute(stmt)
         # rowcount reflects rows actually inserted (excludes the skipped duplicates).
-        inserted_total += result.rowcount or 0
+        # SQLAlchemy's CursorResult exposes it but the generic Result type doesn't.
+        inserted_total += getattr(result, "rowcount", 0) or 0
 
     await db.commit()
 

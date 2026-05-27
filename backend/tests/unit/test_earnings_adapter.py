@@ -91,6 +91,7 @@ async def test_fetch_new_filters_by_cutoff() -> None:
 
 async def test_fetch_new_returns_empty_on_yfinance_exception() -> None:
     """yfinance crashing must not crash the task — just yield no events."""
+
     def _explode(_ticker: str) -> pd.DataFrame:
         raise RuntimeError("yfinance died")
 

@@ -52,7 +52,8 @@ async def _fetch_series_observations(series_id: str, limit: int = 12) -> list[di
             },
         )
         response.raise_for_status()
-        return response.json().get("observations", [])
+        observations: list[dict[str, Any]] = response.json().get("observations", [])
+        return observations
 
 
 def _observation_to_raw_event(obs: dict[str, Any], series_id: str) -> RawEvent | None:

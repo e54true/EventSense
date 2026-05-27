@@ -12,6 +12,7 @@ from app.services.alignment import (
 
 # --- ticker_return ---
 
+
 def test_ticker_return_positive_move() -> None:
     assert ticker_return(100.0, 102.0) == pytest.approx(0.02)
 
@@ -36,6 +37,7 @@ def test_ticker_return_raises_on_negative_baseline() -> None:
 
 # --- excess_return ---
 
+
 def test_excess_return_outperformed_market() -> None:
     # Ticker +3%, SPY +1% → excess +2%
     assert excess_return(0.03, 0.01) == pytest.approx(0.02)
@@ -51,6 +53,7 @@ def test_excess_return_followed_market_exactly() -> None:
 
 
 # --- is_aligned ---
+
 
 class TestBullishAlignment:
     def test_aligned_when_excess_positive(self) -> None:

@@ -1,0 +1,83 @@
+# Backend CI — runs on every PR touching backend code + main branch pushes.
+# Three gates in order:
+#   1. ruff (lint + format check)
+#   2. mypy (strict type check)
+#   3. pytest (integration tests need a real Postgres service container)
+#
+# The Postgres service is the spec-mandated "use a real PG, not mocks"
+# approach — keeps tests close to production behavior.
+
+name: backend-ci
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-ci.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-ci.yml"
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: eventsense
+          POSTGRES_PASSWORD: eventsense
+          POSTGRES_DB: eventsense
+        ports:
+          - 5432:5432
+        # Wait until PG is ready before any step runs — avoids race with first migration.
+        options: >-
+          --health-cmd "pg_isready -U eventsense"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://eventsense:eventsense@localhost:5432/eventsense
+      REDIS_URL: redis://localhost:6379/0
+      # Tests stub the real keys; setting them so settings.validate doesn't trip
+      OPENAI_API_KEY: test-key
+      SEC_USER_AGENT: EventSense ci@example.com
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.5.x"
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies (locked)
+        run: uv sync --frozen
+
+      - name: Lint (ruff)
+        run: uv run ruff check .
+
+      - name: Format check (ruff)
+        run: uv run ruff format --check .
+
+      - name: Type check (mypy)
+        # Strict mypy. App code only — tests intentionally relax some rules.
+        run: uv run mypy app/
+
+      - name: Apply migrations
+        run: uv run alembic upgrade head
+
+      - name: Run tests with coverage
+        # Fail the CI if total coverage drops below 75% (spec §14 target).
+        run: uv run pytest --cov --cov-report=term --cov-fail-under=75

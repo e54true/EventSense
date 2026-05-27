@@ -13,12 +13,12 @@ including them here would just yield zero results from the 8-K filter.
 
 # CIKs verified from https://www.sec.gov/cgi-bin/browse-edgar
 TICKER_TO_CIK: dict[str, str] = {
-    "AAPL": "0000320193",   # Apple Inc
-    "MSFT": "0000789019",   # Microsoft Corp
+    "AAPL": "0000320193",  # Apple Inc
+    "MSFT": "0000789019",  # Microsoft Corp
     "GOOGL": "0001652044",  # Alphabet Inc Class A
-    "AMZN": "0001018724",   # Amazon.com Inc
-    "META": "0001326801",   # Meta Platforms Inc
-    "NVDA": "0001045810",   # NVIDIA Corp
-    "TSLA": "0001318605",   # Tesla Inc
+    "AMZN": "0001018724",  # Amazon.com Inc
+    "META": "0001326801",  # Meta Platforms Inc
+    "NVDA": "0001045810",  # NVIDIA Corp
+    "TSLA": "0001318605",  # Tesla Inc
 }
 """SEC requires CIK as a 10-digit zero-padded string in URLs."""

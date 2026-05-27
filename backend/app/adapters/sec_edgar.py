@@ -61,7 +61,8 @@ async def _fetch_submissions(client: httpx.AsyncClient, cik: str) -> dict[str, A
     """GET /submissions/CIK{cik}.json for one company."""
     response = await client.get(f"{SEC_BASE}/submissions/CIK{cik}.json")
     response.raise_for_status()
-    return response.json()
+    payload: dict[str, Any] = response.json()
+    return payload
 
 
 def _parse_recent_8ks(
@@ -120,9 +121,7 @@ def _parse_recent_8ks(
                     "company_name": submissions.get("name", ""),
                 },
                 affected_tickers=[ticker],
-                published_at=datetime.combine(filing_date, datetime.min.time()).replace(
-                    tzinfo=UTC
-                ),
+                published_at=datetime.combine(filing_date, datetime.min.time()).replace(tzinfo=UTC),
             )
         )
     return events

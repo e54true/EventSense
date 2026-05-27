@@ -10,6 +10,7 @@ import type {
   EventListResponse,
   EventSource,
   OutcomeWindow,
+  PriceRangeResponse,
 } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -46,6 +47,15 @@ export const api = {
 
   getEvent: (id: string): Promise<EventDetailResponse> =>
     request(`/api/v1/events/${id}`),
+
+  getPriceRange: (
+    ticker: string,
+    fromAt: string,
+    toAt: string,
+  ): Promise<PriceRangeResponse> => {
+    const qs = new URLSearchParams({ from_at: fromAt, to_at: toAt });
+    return request(`/api/v1/prices/${ticker}/range?${qs}`);
+  },
 
   getAccuracy: (filters?: {
     source?: EventSource;

@@ -29,6 +29,7 @@ from app.logging_config import configure_logging
 def _configure_celery_logging(**_kwargs: object) -> None:
     configure_logging()
 
+
 settings = get_settings()
 
 celery_app = Celery(

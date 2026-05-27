@@ -6,19 +6,19 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.db.models import Event
+from app.db.models import Event, Prediction
 from app.db.session import get_db
 from app.schemas.event import EventListResponse, EventRead, PaginationMeta
-from app.schemas.prediction import PredictionRead
+from app.schemas.prediction import PredictionWithOutcomes
 
 router = APIRouter(prefix="/events", tags=["events"])
 
 
 class EventDetailResponse(BaseModel):
-    """Single event with its predictions eager-loaded."""
+    """Single event with its predictions + outcomes eager-loaded."""
 
     data: EventRead
-    predictions: list[PredictionRead]
+    predictions: list[PredictionWithOutcomes]
 
 
 @router.get("", response_model=EventListResponse)
@@ -53,13 +53,20 @@ async def get_event(
     event_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ) -> EventDetailResponse:
-    """Single event with predictions eager-loaded via selectinload (1 + 1 queries, not N+1)."""
+    """Single event with predictions + their outcomes eager-loaded.
+
+    selectinload chained: events → predictions → outcomes — three queries total,
+    not N + M. Without this, accessing `.outcomes` would raise (lazy="raise")
+    or trigger an N+1 storm.
+    """
     event = await db.scalar(
-        select(Event).where(Event.id == event_id).options(selectinload(Event.predictions))
+        select(Event)
+        .where(Event.id == event_id)
+        .options(selectinload(Event.predictions).selectinload(Prediction.outcomes))
     )
     if event is None:
         raise HTTPException(status_code=404, detail="Event not found")
     return EventDetailResponse(
         data=EventRead.model_validate(event),
-        predictions=[PredictionRead.model_validate(p) for p in event.predictions],
+        predictions=[PredictionWithOutcomes.model_validate(p) for p in event.predictions],
     )

@@ -50,9 +50,9 @@ _WINDOW_DURATIONS: dict[OutcomeWindow, timedelta] = {
 # We don't want to grab a 3-day-old close as "the 1h price" — that would
 # generate misleading outcomes.
 _PRICE_LOOKBACK_TOLERANCE: dict[OutcomeWindow, timedelta] = {
-    OutcomeWindow.H1: timedelta(hours=1),     # tight: intraday only
-    OutcomeWindow.H24: timedelta(hours=24),   # next day's daily close is fine
-    OutcomeWindow.D7: timedelta(days=4),      # weekend gap allowed
+    OutcomeWindow.H1: timedelta(hours=1),  # tight: intraday only
+    OutcomeWindow.H24: timedelta(hours=24),  # next day's daily close is fine
+    OutcomeWindow.D7: timedelta(days=4),  # weekend gap allowed
 }
 
 
@@ -87,7 +87,8 @@ async def _price_at_or_before(
     )
     if must_be_after is not None:
         stmt = stmt.where(PriceSnapshot.snapshot_at > must_be_after)
-    return await db.scalar(stmt)
+    result: Decimal | None = await db.scalar(stmt)
+    return result
 
 
 async def _candidate_pairs(
@@ -158,7 +159,9 @@ async def _build_outcome(
         must_be_after=prediction.predicted_at,
     )
 
-    if not all([baseline_ticker, end_ticker, baseline_spy, end_spy]):
+    # Narrow the four Optional[Decimal]s explicitly so mypy can see they're
+    # non-None below. `all([...])` doesn't refine variable types.
+    if baseline_ticker is None or end_ticker is None or baseline_spy is None or end_spy is None:
         # Some price missing — defer. Next validator tick will retry once
         # prices arrive (typically the price-fetch worker catches up within
         # 5 minutes during market hours; backfill covers historical gaps).

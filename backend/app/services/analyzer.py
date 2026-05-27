@@ -23,6 +23,7 @@ Idempotency guarantee: only process rows WHERE status = FETCHED. Once moved
 to ANALYZED or FAILED, future polls won't pick the event up again.
 """
 
+import uuid
 from datetime import UTC, datetime
 
 import structlog
@@ -34,7 +35,7 @@ from app.db.models import Event, EventStatus, Prediction
 from app.db.session import transient_session
 from app.llm import clients
 from app.llm.cost import estimate_cost_usd, today_spend_usd
-from app.llm.router import choose_model
+from app.llm.router import ModelChoice, choose_model
 from app.llm.schemas import EventAnalysis
 
 logger = structlog.get_logger(__name__)
@@ -77,7 +78,7 @@ async def _process_one(db: AsyncSession, event: Event, spend_today: float) -> in
 def _build_predictions(
     event: Event,
     analysis: EventAnalysis,
-    choice: clients.ModelChoice,  # type: ignore[attr-defined]
+    choice: ModelChoice,
     cost_usd: float,
 ) -> list[Prediction]:
     """Turn one EventAnalysis into N Prediction ORM rows.
@@ -115,7 +116,7 @@ def _build_predictions(
     return rows
 
 
-async def _candidate_event_ids(db: AsyncSession, limit: int) -> list:
+async def _candidate_event_ids(db: AsyncSession, limit: int) -> list[uuid.UUID]:
     """Cheap read-only query: which events look pending? Lock comes later, per event."""
     result = await db.scalars(
         select(Event.id)

@@ -1,6 +1,7 @@
-import type { PredictionRead } from "@/lib/types";
+import type { PredictionRead, PredictionWithOutcomes } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { DirectionBadge } from "./DirectionBadge";
+import { OutcomesTable } from "./OutcomesTable";
 
 const MAGNITUDE_STYLE: Record<PredictionRead["magnitude"], string> = {
   LOW: "text-slate-500",
@@ -14,8 +15,19 @@ const CONFIDENCE_BAR_COLOR: Record<PredictionRead["direction"], string> = {
   NEUTRAL: "bg-slate-400",
 };
 
-export function PredictionRow({ prediction }: { prediction: PredictionRead }) {
+// Accepts either PredictionRead (no outcomes) or PredictionWithOutcomes —
+// the OutcomesTable section is conditional on having outcomes data.
+type Props = {
+  prediction: PredictionRead | PredictionWithOutcomes;
+};
+
+function hasOutcomes(p: Props["prediction"]): p is PredictionWithOutcomes {
+  return "outcomes" in p && Array.isArray(p.outcomes);
+}
+
+export function PredictionRow({ prediction }: Props) {
   const confidencePct = prediction.confidence * 100;
+  const outcomes = hasOutcomes(prediction) ? prediction.outcomes : null;
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -55,6 +67,12 @@ export function PredictionRow({ prediction }: { prediction: PredictionRead }) {
           </>
         )}
       </div>
+
+      {outcomes !== null && outcomes.length > 0 && (
+        <div className="mt-3">
+          <OutcomesTable outcomes={outcomes} />
+        </div>
+      )}
     </div>
   );
 }

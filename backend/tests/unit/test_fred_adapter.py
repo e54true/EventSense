@@ -49,8 +49,8 @@ async def test_fetch_new_skips_missing_value() -> None:
     """value=='.' (FRED's missing-data marker) and non-numeric values must be skipped."""
     observations = [
         {"date": "2026-04-01", "value": "332.4"},
-        {"date": "2026-03-01", "value": "."},      # missing — skip
-        {"date": "2026-02-01", "value": "n/a"},    # garbage — skip
+        {"date": "2026-03-01", "value": "."},  # missing — skip
+        {"date": "2026-02-01", "value": "n/a"},  # garbage — skip
         {"date": "2026-01-01", "value": "327.5"},
     ]
     with patch(

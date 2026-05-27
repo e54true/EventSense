@@ -6,9 +6,10 @@ hits yfinance directly (deliberately — yfinance latency is too unpredictable
 for a request-path call).
 """
 
+from datetime import datetime
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,6 +26,19 @@ class LatestPrice(BaseModel):
     ticker: str
     price: Decimal
     source: str  # 'cache' or 'db' — useful for debugging cache misses
+
+
+class PricePoint(BaseModel):
+    snapshot_at: datetime
+    price: Decimal
+
+
+class PriceRangeResponse(BaseModel):
+    ticker: str
+    points: list[PricePoint]
+    # Echo of inputs — helps frontend cache keys + sanity check
+    from_at: datetime
+    to_at: datetime
 
 
 @router.get("/{ticker}/latest", response_model=LatestPrice)
@@ -59,3 +73,43 @@ async def latest_price(
             detail=f"No price data for {ticker} yet (run backfill or wait for market hours)",
         )
     return LatestPrice(ticker=ticker, price=row.price, source="db")
+
+
+@router.get("/{ticker}/range", response_model=PriceRangeResponse)
+async def price_range(
+    ticker: str,
+    from_at: datetime = Query(..., description="ISO timestamp lower bound (inclusive)"),
+    to_at: datetime = Query(..., description="ISO timestamp upper bound (inclusive)"),
+    db: AsyncSession = Depends(get_db),
+) -> PriceRangeResponse:
+    """All snapshots for `ticker` between `from_at` and `to_at`, ascending.
+
+    Used by the event-detail chart on the frontend. We cap the range to keep
+    payloads bounded (`to_at - from_at` must be <= 30 days for now).
+    """
+    ticker = ticker.upper()
+    if ticker not in get_settings().watchlist:
+        raise HTTPException(status_code=404, detail=f"Ticker {ticker} not in watchlist")
+    if to_at <= from_at:
+        raise HTTPException(status_code=400, detail="to_at must be after from_at")
+    if (to_at - from_at).days > 30:
+        raise HTTPException(status_code=400, detail="Range too wide (max 30 days)")
+
+    rows = (
+        await db.scalars(
+            select(PriceSnapshot)
+            .where(
+                PriceSnapshot.ticker == ticker,
+                PriceSnapshot.snapshot_at >= from_at,
+                PriceSnapshot.snapshot_at <= to_at,
+            )
+            .order_by(PriceSnapshot.snapshot_at.asc())
+        )
+    ).all()
+
+    return PriceRangeResponse(
+        ticker=ticker,
+        from_at=from_at,
+        to_at=to_at,
+        points=[PricePoint(snapshot_at=r.snapshot_at, price=r.price) for r in rows],
+    )
