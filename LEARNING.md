@@ -21,8 +21,9 @@
 - [Part 6:Milestone 6 — Validation Loop(預測驗證閉環)](#part-6milestone-6--validation-loop)
 - [Part 7:Milestone 7 — Frontend Sprint 1(Next.js + UI)](#part-7milestone-7--frontend-sprint-1)
 - [Part 8:Milestone 8 — Frontend Sprint 2 + CI(圖表 + dashboard + GitHub Actions)](#part-8milestone-8--frontend-sprint-2--ci)
-- [Part 9:術語對照表(查得到的字典)](#part-9術語對照表)
-- [Part 10:面試講故事 — 5 分鐘版每個 milestone](#part-10面試講故事)
+- [Part 9:Milestone 9 — Deploy (Railway + Vercel)](#part-9milestone-9--deploy-railway--vercel)
+- [Part 10:術語對照表(查得到的字典)](#part-10術語對照表)
+- [Part 11:面試講故事 — 5 分鐘版每個 milestone](#part-11面試講故事)
 
 ---
 
@@ -4159,7 +4160,486 @@ paths:
 
 ---
 
-# Part 9:術語對照表
+# Part 9:Milestone 9 — Deploy (Railway + Vercel)
+
+## 9.1 這階段在幹嘛?
+
+```
+M1-M8:本機 docker compose 起來能跑,但 URL 只有你看得到
+M9:把整套搬到雲端,任何人開瀏覽器都能用
+```
+
+從「**localhost 玩具**」變「**有真實 URL 跑著的 production app**」。
+
+## 9.2 新概念清單
+
+1. **PaaS vs IaaS** — Railway / Vercel 是什麼
+2. **Railway architecture** — service / addon / project
+3. **Variable references** — `${{Postgres.PGUSER}}`
+4. **Vercel architecture** — Edge / serverless / build
+5. **Internal vs public network**
+6. **`$PORT` injection** — 動態 port
+7. **`sh -c` vs exec form** — Dockerfile CMD 的 shell 模式
+8. **Healthcheck per-service**
+9. **Deployment Protection**(Vercel)
+10. **CDN edge caching**
+11. **Zero-downtime deploy**
+12. **Push-to-deploy automation**
+13. **Production cost model**
+
+---
+
+## 9.3 PaaS vs IaaS — Railway / Vercel 是什麼
+
+### 雲端服務的「**抽象層厚度**」光譜
+
+```
+低抽象 (IaaS)                                              高抽象 (SaaS)
+   │                                                          │
+   ▼                                                          ▼
+AWS EC2 ──→ AWS ECS ──→ Railway / Render ──→ Vercel ──→ Notion
+(虛擬機)    (容器編排)     (PaaS,跑你的 code)    (跑特定框架)    (現成 app)
+```
+
+**IaaS(Infrastructure as a Service)** — 給你機器跟網路,你裝什麼自己管(Linux、Docker、DB...)
+**PaaS(Platform as a Service)** — 給你「跑 code」的平台,基礎設施隱藏(Railway 是這層)
+**SaaS(Software as a Service)** — 直接給你 app(Gmail / Slack)
+
+### 我們 M9 選 PaaS(Railway + Vercel)的理由
+
+| | AWS (IaaS+) | Railway (PaaS) |
+|---|---|---|
+| **學習時間** | 1-2 天(VPC / IAM / ECS / ALB / RDS / Route 53...) | 1-2 小時 |
+| **隱藏的概念** | 全部要你自己懂 | Network / certs / load balancer 都自動 |
+| **成本** | $20-30/月 | $3-5/月 |
+| **彈性** | 高(可以 fine-tune) | 低(opinionated) |
+| **業界職缺要求** | 70% JD 點名 | 5% 點名 |
+
+**M9 學 PaaS** = 快速上線拿到 URL + 學「部署」概念。
+**M13-M14 將學 IaaS** = 把同個系統用 Terraform 部到 AWS,履歷雙打。
+
+---
+
+## 9.4 Railway Architecture — 怎麼運作
+
+### 物件層級
+
+```
+Railway Account
+  └── Project (像 GitHub repo,但是部署單位)
+        ├── Service (一個 container,跑你的程式)
+        │     └── Deployment (每次 push 一個新版本)
+        ├── Service (worker)
+        ├── Service (analyzer)
+        ├── Addon (Postgres) ← 跟 service 一樣是 box,只是 managed
+        └── Addon (Redis)
+```
+
+### 我們 EventSense 部 6 個 box
+
+```
+Postgres ──┐
+Redis ─────┤
+backend ───┤ ← public URL
+worker ────┤
+analyzer ──┤
+beat ──────┘
+```
+
+每個 box **跑在自己的 container** 上。Railway 幫你:
+- 從 GitHub repo build Docker image
+- 跑 container
+- 給 public URL(只有 backend 有)
+- Inject env vars
+- 收 logs / metrics
+- Auto-restart on crash
+- Auto-redeploy on git push
+
+你完全**不用**碰 server / VM / load balancer。
+
+---
+
+## 9.5 Variable References — Railway 的「自動連線」魔法
+
+### 沒 reference 的世界(原始)
+
+如果你直接抄 Postgres 的 URL 進 backend 的 env:
+```
+DATABASE_URL=postgresql://user:abc123@hostname.railway.app:5432/db
+```
+
+問題:
+- Postgres 重 provision 時 password 變了 → backend env 還是舊的 → connect 失敗
+- Hostname 變了 → 一樣斷
+- Password 寫在 plain text(雖然 Railway UI 有 mask 但還是存在)
+
+### Reference 語法
+
+```
+DATABASE_URL=postgresql+asyncpg://${{Postgres.PGUSER}}:${{Postgres.PGPASSWORD}}@${{Postgres.PGHOST}}:${{Postgres.PGPORT}}/${{Postgres.PGDATABASE}}
+```
+
+`${{Postgres.PGUSER}}` 不是字面字串 — **Railway resolve 時拿當下 Postgres addon 的 PGUSER 值**。
+
+優點:
+- Postgres 改密碼 / 換 host → 自動更新,backend 不用碰
+- Service Console 看 env 時這個欄位仍是 reference shape(不洩漏 password)
+- 私有 hostname(`postgres.railway.internal`)自動 resolve
+
+### 為什麼要加 `+asyncpg`?
+
+Railway Postgres 自動給的 `DATABASE_URL` 是 `postgresql://...`(預設 driver)。
+我們用 SQLAlchemy async + asyncpg driver,**SQLAlchemy 用 URL scheme 決定 driver**:
+- `postgresql://` → 用 psycopg2(同步)
+- `postgresql+asyncpg://` → 用 asyncpg(非同步)
+
+**只差幾個字,backend 整個跑不跑得起來**。記得加。
+
+---
+
+## 9.6 `$PORT` Injection — 動態 port 的概念
+
+### 為什麼 platform 要 inject port?
+
+```
+Railway 一台 host 機器:
+  Port 8001 ← service A
+  Port 8002 ← service B
+  Port 8003 ← service C
+  ...
+```
+
+多個 service 不能搶同一個 port。**Platform 動態分配每個 service 一個 port**,inject 進 env var `$PORT`。
+
+你的 app **必須讀 $PORT 決定 bind 在哪**:
+```python
+uvicorn app.main:app --host 0.0.0.0 --port $PORT
+```
+
+不照規矩 → app 跑了但 platform 找不到 → healthcheck 永遠 fail。
+
+### 我們踩到的坑
+
+第一版 start command:
+```
+uvicorn app.main:app --host 0.0.0.0 --port $PORT
+```
+
+Railway **直接 exec** 這個 command(沒走 shell),`$PORT` 變字面字串 → uvicorn:
+```
+Error: Invalid value for '--port': '$PORT' is not a valid integer.
+```
+
+**修法:用 `sh -c` 包**:
+```
+sh -c 'uvicorn app.main:app --host 0.0.0.0 --port $PORT'
+```
+
+`sh -c` 啟動 shell,shell 展開 `$PORT` 成實際數字。
+
+### Docker CMD 兩種 form
+
+```dockerfile
+# Exec form(array)— 直接 exec,沒 shell
+CMD ["uvicorn", "app.main:app", "--port", "$PORT"]
+# ↑ $PORT 不展開,literal 字串
+
+# Shell form(string)— 走 /bin/sh -c
+CMD uvicorn app.main:app --port $PORT
+# ↑ $PORT 展開,但 signal forwarding 較差
+```
+
+我們用第三種:exec form `sh -c '...'`,**兩者優點都有**:
+- shell 模式展開 env var
+- exec 後 sh 是 PID 1,但搭 tini 處理 signal,所以 worker / beat 收得到 SIGTERM clean shutdown
+
+---
+
+## 9.7 Vercel Architecture — Edge + Serverless
+
+### Vercel 跟 Railway 不一樣的地方
+
+Railway:跑長期 process(container 一直開著)
+Vercel:**function-based**
+
+```
+你的 Next.js page:
+  Static page (○) → 預先 render 成 HTML,放 CDN → 第一次 request 直接吐
+  Dynamic page (ƒ) → Vercel function on-demand 起來 → render → 回應
+```
+
+### Edge CDN
+
+Vercel 把 static assets(HTML、JS、圖片)複製到**全球 70+ edge location**。
+你在台灣開頁面 → 從東京 / 香港 edge 拉,**不用跨太平洋打到美東**。
+
+我們的 Next.js build 出 3 個 static routes(`/`、`/_not-found`、`/dashboard`)+ 1 個 dynamic(`/events/[id]`)。
+
+### Serverless function
+
+`/events/[id]` 是 dynamic — 每次 request 在 Vercel function 跑一遍。
+- 第一次:**cold start**(load Node + import code,~500ms)
+- 後續:**warm**(~50ms)
+
+Vercel function 跑在 AWS Lambda 上(Vercel 自己跑在 AWS)。
+
+### Vercel 沒有「server」概念
+
+你不會看到「container」「process」這些字眼。Vercel UI 沒有「重啟 server」按鈕。
+**改了 code → push to main → Vercel 自動 rebuild + atomic swap → 新版本上線**。
+
+---
+
+## 9.8 Internal vs Public Network
+
+### 公開 vs 私有
+
+```
+Public Network:
+  internet ──→ eventsense-production.up.railway.app ──→ backend
+  
+Private Network:
+  backend ──→ postgres.railway.internal ──→ Postgres
+  worker  ──→ redis.railway.internal    ──→ Redis
+```
+
+### 為什麼分?
+
+**Public**:
+- 任何人可訪問
+- 走 internet / SSL 加密
+- 有 egress 費(出 cloud 的流量)
+- 適合給 user 用的 API
+
+**Private (`*.railway.internal`)**:
+- 只有同 project 內的 service 看得到
+- 走 cloud 內部網路(不出 internet)
+- 沒 egress 費
+- **安全**(沒人能從 internet 連 PG / Redis)
+
+我們 backend → Postgres 走 `postgres.railway.internal` — DB **完全不對 internet 開放**。
+
+### 對比 AWS
+
+AWS 對應:**VPC + Private Subnet + Security Group**。Railway 自動幫你做了 — 完全不用設。
+AWS 自己做要:畫 subnet、設 NACL、設 SG 允許 backend SG → RDS SG 的 5432 port。
+
+---
+
+## 9.9 Healthcheck — Liveness vs Readiness 為什麼分
+
+### 兩種 probe
+
+| | Liveness | Readiness |
+|---|---|---|
+| 問題 | 「process 活著嗎?」 | 「process 準備好處理 request 嗎?」 |
+| 預設 | 必須 cheap 跟可靠 | 可以做 DB / 外部依賴 check |
+| 不過時的行為 | 整個 kill 重啟 | 從 load balancer 摘掉(但 process 不殺) |
+
+### 我們的設計
+
+```python
+GET /api/v1/health        — uptime only, no I/O
+GET /api/v1/health/ready  — adds DB SELECT 1
+```
+
+**為什麼分**:
+- 如果 DB 掛 30 秒,liveness 還活 → process 不會被 kill → DB 回來後直接 healthy
+- 如果不分,DB 掛 → liveness fail → process 被 kill → 重啟 → DB 仍掛 → 再 kill → 無限重啟
+
+對 Railway 來說我們只設了 liveness path(`/api/v1/health`)— Railway 沒有獨立 readiness 概念。但**未來搬到 k8s** 兩個都用得到。
+
+### Healthcheck 配 Celery 的陷阱(坑 4)
+
+Worker / analyzer / beat 是 Celery,**沒 HTTP server**。Railway 對它們也跑 healthcheck `/api/v1/health` → 永遠 timeout → 永遠 kill。
+
+修法:**healthcheck per-service**(在 service UI 個別設),不要寫進共享 `railway.json`。
+
+**通用教訓**:**config-as-code 的「共享性」是雙刃劍**。某些設定該留 service-specific UI。
+
+---
+
+## 9.10 Vercel Deployment Protection 是什麼
+
+### Vercel 的「預設保護」
+
+Vercel Hobby plan 從某個版本後,**預設打開 Deployment Protection**:
+- 所有 preview deployment(每個 PR 自動 deploy 一份)需要 Vercel 帳號登入
+- **production deployment 也預設保護**(在某些 plan)
+- 目的:你的 user-only-side-project 不想被 Google 索引到
+
+### 我們踩到
+
+Frontend deploy ready,但 URL 全 404 → 因為 protection 開著 + alias 處理保護的 deploy 變 404。
+
+**修法**:Settings → Deployment Protection → Vercel Authentication 關掉(toggle off)。
+
+### 業界 best practice
+
+- Preview deploys(每個 PR)→ 保護(只有 team member 看)
+- Production deploy(main branch)→ 公開
+
+Vercel UI 可以分開設,我們直接全關(Hobby 不分 preview / production)。
+
+---
+
+## 9.11 Zero-Downtime Deploy
+
+### 傳統部署
+
+```
+ssh server
+git pull
+systemctl restart backend
+# ↑ 期間 1-10 秒 user 看到 502
+```
+
+### Railway 的做法
+
+```
+新 deploy push:
+  1. 起新 container(B)
+  2. 等新 container healthcheck pass
+  3. Switch load balancer:traffic → B
+  4. 殺舊 container(A)
+
+User 看不到 downtime
+```
+
+### 我們的 healthcheck 是 zero-downtime 的關鍵
+
+如果沒 healthcheck → Railway 不知道新 container ready 沒 → 可能舊先殺新還沒起 → downtime
+有 healthcheck → 「新 container `/api/v1/health` 回 200 才算 ready」→ 安全 swap
+
+---
+
+## 9.12 Push-to-Deploy
+
+連 GitHub repo 後,**push to main 自動觸發**:
+
+```
+local: git push origin main
+              │
+              ▼
+GitHub:webhook 通知 Railway + Vercel
+              │
+              ├─→ Railway 4 個 service 都 rebuild
+              │     (path filter 沒設,所以全 trigger;
+              │      M8 時 GH Actions 我們有設 path filter,
+              │      但 Railway 沒設)
+              │
+              └─→ Vercel rebuild frontend
+                    (Vercel 自動只看 frontend/ 因為 Root Directory)
+
+~3-5 分鐘後 production 更新
+```
+
+**達成「沒人在管」的自動化**。
+
+### CI vs CD 關係
+
+- **CI(M8 做的)**:每 push 跑 ruff / mypy / pytest
+- **CD(M9 達成)**:檢查過了**自動部署**
+
+完整 pipeline:
+```
+push to main
+  ↓
+GitHub Actions:lint + type + test     (CI)
+  ↓ pass
+Railway + Vercel:rebuild + deploy     (CD)
+  ↓
+Production updated
+```
+
+**「真實的 modern web dev workflow」就是這個**。
+
+---
+
+## 9.13 Production Cost — 真實便宜
+
+| 服務 | 月費 |
+|---|---|
+| Railway Hobby plan(4 backend services + Postgres + Redis) | ~$2-3 |
+| Vercel Hobby plan(frontend) | $0 |
+| OpenAI(LLM daily cap $1)| ~$0.5-1 |
+| **總計** | **<$5/月** |
+
+**對 portfolio demo 的 value 而言極划算** — 一杯咖啡的錢就能說「我有 production app 跑著」。
+
+### 對比業界其他 stack
+
+| Stack | 月費 |
+|---|---|
+| Heroku(2024 後沒 free tier) | ~$15-25 |
+| AWS(同等 setup) | $20-30 |
+| GCP(Cloud Run + Cloud SQL) | $15-25 |
+| Vercel + Supabase | $0-5 |
+| Railway + Vercel(我們) | <$5 |
+
+---
+
+## 9.14 我們踩到的所有坑(濃縮版)
+
+| # | 症狀 | 根因 | 修法 | 教訓 |
+|---|---|---|---|---|
+| 1 | Railpack 找不到語言 | Root Directory 沒設 | UI 填 `backend` + 按 Update | UI 改設定要找 confirm button |
+| 2 | `$PORT` is not a valid integer | Railway exec form 不展開 | start command 包 `sh -c '...'` | exec vs shell form |
+| 3 | Application failed to respond | Domain target port 8000 vs app 8080 | Domain port 改 8080 | EXPOSE 別 hardcode |
+| 4 | Celery service healthcheck timeout | railway.json healthcheck 套到 Celery | railway.json 拿掉,backend UI 個別設 | 共享 config 跟 per-service 要分 |
+| 5 | Beat 寫 schedule 權限不夠 | `/app` 被 root own | start command 加 `--schedule=/tmp/...` | Dockerfile 該 chown 目錄 |
+| 6 | OpenAI 401 全失敗 | env var 是舊 key | 重貼新 key + reset FAILED events | failure_reason 欄位救命 |
+| 7 | Vercel 全 404 | Deployment Protection 預設開 | Settings → toggle off | Vercel hobby 默認保護 |
+
+每一個都是面試講得出來的故事。**沒踩坑等於沒學東西**。
+
+---
+
+## 9.15 M9 速記表
+
+| 概念 | 一句話 |
+|---|---|
+| **PaaS / IaaS** | Railway = PaaS(隱藏 infra),AWS = IaaS+(全自己管) |
+| **Railway Project / Service / Addon** | 一個 project 包多個 service 跟 managed addon |
+| **`${{Postgres.PGUSER}}`** | Railway variable reference,自動拿 addon 當下值 |
+| **`postgresql+asyncpg://`** | SQLAlchemy 用 scheme 選 driver — 一定要 +asyncpg |
+| **Internal vs public network** | `*.railway.internal` 是私網,只 project 內看得到 |
+| **`$PORT` injection** | Platform 動態分配 port 給 service |
+| **`sh -c` shell form** | Dockerfile / start command 想展開 `$VAR` 必須 |
+| **tini PID 1** | Signal forwarding 給 worker / beat clean shutdown |
+| **Liveness vs Readiness** | 「活著嗎」vs「準備好嗎」,k8s 標準 |
+| **Per-service healthcheck** | Celery 沒 HTTP,別套 backend 的 healthcheck 給它 |
+| **Vercel Edge CDN** | Static asset 70+ 全球節點,自動 cache |
+| **Vercel Serverless function** | Dynamic page 跑在 AWS Lambda 上 |
+| **Deployment Protection** | Vercel 預設保護所有 deploy,要主動關 |
+| **Zero-downtime deploy** | 新 container healthy 才 swap traffic |
+| **Push-to-deploy** | git push → GitHub webhook → 自動 build + deploy |
+| **CI → CD** | 檢查過了就部署,完整 modern web dev workflow |
+
+---
+
+## 9.16 面試講 M9 故事建議
+
+5 分鐘版本:
+
+**第 1 分鐘**:架構
+> 「M9 把 EventSense 上 production — Railway 跑 backend 4 個 service(FastAPI + 3 個 Celery worker)+ Postgres + Redis addons,Vercel 跑 Next.js frontend。整個 stack 不到 $5/月。」
+
+**第 2 分鐘**:設計選擇
+> 「選 PaaS(Railway / Vercel)而非 AWS 是 staged approach — 先快速上線拿到 URL 證明系統能用,M13-M14 會用 Terraform 把同樣系統部到 AWS ECS + RDS,展示 IaaS 能力。Railway 學到的 Docker / env / healthcheck / network 概念全可搬。」
+
+**第 3 分鐘**:踩坑故事一(技術深度)
+> 「Beat service 一直 crash 在 `Permission denied: celerybeat-schedule`。追下去發現是 Dockerfile 的 COPY --chown 只 chown 檔案不 chown 目錄,non-root user 沒辦法在 /app 創新檔。臨時修法是把 schedule 寫到 /tmp,長期該改 Dockerfile RUN chown。」
+
+**第 4 分鐘**:踩坑故事二(系統思考)
+> 「另一個是 healthcheck 套到 Celery service 全 timeout。原因是 railway.json 把 healthcheck path 設成共享,但 4 個 service 共用 image,只有 backend 有 HTTP。教訓是 config-as-code 不是萬能,某些 per-service 不同的設定該留 UI 個別設。把 healthcheck 從 railway.json 拿掉、backend service 自己設,worker / analyzer / beat 就過了。」
+
+**第 5 分鐘**:結果
+> 「Production URL 任何人能開。20 events、36 predictions、30 outcomes 全是真實 OpenAI 跑出來。Accuracy:FRED 56%、SEC 0%、FOMC 25%。**這成績爛但真實** — 業界 LLM 對短線預測接近 random 是已知,我的系統 capture 了這現實沒造假。比『demo 顯示 100% 對』可信 100 倍。」
+
+---
+
+# Part 10:術語對照表
 
 | 術語 | 一句話 |
 |---|---|
@@ -4252,7 +4732,7 @@ paths:
 
 ---
 
-# Part 10:面試講故事 — 5 分鐘版每個 milestone
+# Part 11:面試講故事 — 5 分鐘版每個 milestone
 
 ## M1 — Foundation
 

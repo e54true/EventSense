@@ -1965,10 +1965,260 @@ LLM PREDICTIONS (1)
 
 ## Milestone 9 — Deploy (Railway)
 
-> **狀態**:⏳ 未開始
-> **目標**:後端 + worker 部署到 Railway,前端到 Vercel。
+> **狀態**:✅ 完成 — **production 真的上線**
+> **目標**:後端 4 個 service(backend / worker / analyzer / beat)+ Postgres + Redis 部署到 Railway;frontend 部署到 Vercel;系統自動跑 + 任何人能打開 URL。
 
-_(待實作)_
+### 上線後的 production URL
+
+```
+Frontend:  https://event-sense-five.vercel.app
+Backend:   https://eventsense-production.up.railway.app
+Code:      https://github.com/e54true/EventSense
+```
+
+### 部署架構
+
+```
+                       Internet
+                          │
+                          ├─→ Vercel CDN ─→ Next.js (frontend)
+                          │
+                          └─→ Railway Proxy ─→ FastAPI (backend)
+                                                  │
+                                                  ▼
+                  Railway Internal Network (railway.internal)
+                                                  │
+                       ┌──────────────┬───────────┴─────────────┐
+                       │              │           │              │
+                  PostgreSQL       Redis       worker        analyzer
+                  (addon)         (addon)    (celery)      (celery, -Q analyze)
+                                              │              │
+                                              └──────┬───────┘
+                                                     │
+                                                    beat
+                                                  (celery scheduler)
+```
+
+### 做了什麼
+
+#### 程式碼準備(commit `de97f3e`)
+
+**`backend/Dockerfile` 強化**:
+- Pin `python:3.12.7-slim` 跟 `uv:0.5.18`(repeatability)
+- 裝 `curl`(HEALTHCHECK 用)+ `tini`(PID 1,signal forwarding 給 worker/beat clean shutdown)
+- `HEALTHCHECK --interval=30s` 走 `/api/v1/health`
+- `ENV PORT=8000` 當 fallback,實際被 Railway 注入的 `$PORT` 蓋過
+- Non-root `app` user(M9 過程中發現這層讓 beat 撞權限,見「踩到的坑」)
+
+**`backend/app/api/routes/health.py`(新)**— Split liveness vs readiness:
+- `GET /api/v1/health` — 純 process uptime,no DB,給 LB / Dockerfile 用
+- `GET /api/v1/health/ready` — 加 DB `SELECT 1` ping,DB 掛時 503
+
+**`backend/app/main.py`** — CORS allowlist + Vercel `*.vercel.app` regex(`allow_origin_regex=r"https://[a-z0-9-]+\.vercel\.app"`)
+
+**`backend/railway.json`** — Railway 讀的 config:`builder: "DOCKERFILE"`, restart policy. **(M9 中發現 healthcheckPath 不該放這裡 — 見坑 §4)**
+
+**`backend/Procfile`** — 4 個 service 的 start command(Heroku-style,Railway 不直接讀但有文件價值)
+
+**`backend/.env.production.example`** — Prod 用 env 範本(用 Railway variable reference `${{Postgres.PGUSER}}` 語法)
+
+**`DEPLOYMENT.md`** — 12 章 step-by-step runbook(Railway 註冊到 production unattended)
+
+#### 修 railway.json healthcheck 規模問題(commit `733449b`)
+
+第一版 `railway.json` 寫 `"healthcheckPath": "/api/v1/health"`。但 worker / analyzer / beat **共用同一個 image + railway.json**,卻沒 HTTP server。Railway 套用 healthcheck 給每個 service → Celery service 永遠 healthcheck timeout → 部署失敗。
+
+修法:**從 `railway.json` 拿掉 healthcheck**,只在 backend service 的 UI 個別設。
+
+---
+
+### Railway 真實部署過程(超多血淚)
+
+#### 坑 1:Railpack 沒讀 root directory
+**症狀**:第一次 deploy build 秒失敗,Railpack(Railway 預設 builder)說「找不到語言」,列出整個 repo root(包含 `frontend/`、`.github/` 等)。
+
+**根因**:Railway 從 GitHub import 時預設 root = `/`,沒讀我們的 `backend/Dockerfile`。
+
+**修法**:Service Settings → Source → Root Directory 填 `backend`。**Railway UI 是「輸入完要按 Update 按鈕」**,Enter 不會自動 save(我第一次以為輸入後就好,結果沒存)。
+
+存好之後 Railway 自動找到 `backend/railway.json`,builder 從 Railpack 切到 Dockerfile,build 通過。
+
+#### 坑 2:`$PORT` 不展開
+**症狀**:Backend deploy 成功(image 跑起來)但 healthcheck 一直 timeout。Deploy Log 看到:
+```
+Error: Invalid value for '--port': '$PORT' is not a valid integer.
+```
+
+**根因**:Custom Start Command 設 `uvicorn app.main:app --host 0.0.0.0 --port $PORT` → Railway 把它**直接 exec**(不走 shell),`$PORT` 是字面字串。
+
+**修法**:**包 `sh -c`** 強制 shell 模式:
+```
+sh -c 'alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT'
+```
+
+(原本含 `&&` 的版本之所以能跑,是因為 `&&` 觸發 Railway auto-detect shell mode。改成單一 command 時就需要明確 `sh -c`。)
+
+**面試講點**:Docker `CMD` exec form vs shell form 的差異,大部分 platform 都這樣處理 — 一個 command 不展開,多個 chained 自動 shell。
+
+#### 坑 3:Backend Domain target port mismatch
+**症狀**:Backend healthcheck 過了、curl `/health` 卻回「Application failed to respond」。
+
+**根因**:Railway inject `$PORT=8080`,uvicorn binds 8080。但 **Generate Domain 時自動用 Dockerfile 的 `EXPOSE 8000`** 當 target port。proxy → 8000 → 沒人在那 → 連不上。
+
+**修法**:Networking → Domain → Edit Port → 改 `8000` 成 `8080`。
+
+**設計教訓**:Dockerfile 應該**不要** `EXPOSE 8000`(讓 Railway 完全用 `$PORT`),M9 後 cleanup 該做。
+
+#### 坑 4:Healthcheck 套用到 Celery service
+**症狀**:Worker 部署 build 過、Deploy 過,卻在 `Network > Healthcheck` 5 分鐘 timeout 失敗。
+
+**根因**:`backend/railway.json` 有 `healthcheckPath: "/api/v1/health"`,worker 共用同一 config → Railway 對 worker 也跑 healthcheck → Celery 沒 HTTP server → 永遠 timeout → kill。
+
+**修法**:
+1. 從 `railway.json` 拿掉 healthcheck section
+2. backend service 自己在 UI 補上 healthcheck path
+
+**通用啟示**:**共用 config 跟 per-service config 要分清楚**。config-as-code 不是萬能,某些設定該留 service-specific UI。
+
+#### 坑 5:Beat 寫不出 schedule file
+**症狀**:Beat 部署啟動立刻 crash,traceback:
+```
+_gdbm.error: [Errno 13] Permission denied: 'celerybeat-schedule'
+```
+
+**根因**:Celery Beat 預設寫 `celerybeat-schedule` 到 working directory(`/app`)。我們 Dockerfile:
+```dockerfile
+WORKDIR /app           # 創 /app 為 root owner
+COPY --chown=app:app . # 只 chown copy 進去的「檔案」,不 chown「目錄」本身
+USER app               # 切非 root user
+```
+
+→ `/app` directory 是 root:root,`app` user 沒 write permission → beat 創不出 schedule file。
+
+**修法**(免 rebuild image):start command 加 `--schedule=/tmp/celerybeat-schedule`(`/tmp` world-writable):
+```
+celery -A app.workers.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
+```
+
+**長期修法**(M9 後該 cleanup):Dockerfile 加 `RUN chown app:app /app` 在 USER 切換前。
+
+#### 坑 6:OPENAI_API_KEY 401 全失敗
+**症狀**:Events 抓到 production DB,analyzer 跑了,但**所有 event 都是 FAILED**,failure_reason:
+```
+Error code: 401 - Incorrect API key provided: <sk-proj**...c4A>
+```
+
+**根因**:Railway env var 裡的 OPENAI_API_KEY 是**舊的 / 失效的**那把。
+
+**修法**:重新貼新 key 進 4 個 service 的 Variables。然後 reset failed events:
+```python
+async with transient_session() as db:
+    await db.execute(
+        update(Event).where(Event.status == EventStatus.FAILED).values(
+            status=EventStatus.FETCHED, failure_reason=None
+        )
+    )
+    await db.commit()
+```
+再呼叫 analyzer task → 20 events 全部 ANALYZED ✅
+
+**設計收穫**:**`failure_reason` 欄位救了一命** — 沒它根本不知道是 401。M5 spec 加這欄是對的。
+
+#### 坑 7:Vercel 全部 404
+**症狀**:Build log 顯示 5 個 routes(`/`, `/dashboard`, `/events/[id]` 等)生成成功,但打所有 URL 都 404 + body `NOT_FOUND`。
+
+**根因**:Vercel 預設打開 **Deployment Protection — Vercel Authentication**,所有 deployment 需要登入 Vercel 帳號才能看。Canonical URL 回 401(SSO cookie),alias 回 404(被擋的 deploy 透過 alias 看起來像不存在)。
+
+**修法**:Settings → Deployment Protection → **Vercel Authentication 關掉(toggle off)**。
+
+**面試講點**:Vercel 從某個版本後 protection 預設開,出於 Hobby 用戶不希望公開 preview deployment 的考量。但 production deploy 通常該公開,要記得手動關。
+
+---
+
+### 為什麼這樣選(關鍵決策)
+
+#### 為什麼選 Railway 而非 AWS?
+- **學習曲線**:Railway 一個下午能上線,AWS first-time 1-2 天
+- **抽象層**:Railway 是 PaaS,隱藏 VPC / IAM / ALB / Route 53 / ACM 等 50 個 AWS 概念
+- **成本**:Railway $3-5/月,AWS 同等 setup $20-30/月
+- **跨平台知識**:Railway 學到的 Docker / env var / healthcheck / DB / Redis 概念**全部可以搬到 AWS**,只是換 UI
+- **M13-M14 規劃**:之後會用 Terraform 把同一個系統部到 AWS,**履歷上 Railway + AWS 都有**
+
+#### 為什麼 4 個 service 不合併?
+- **Separation of concerns**:fetcher / analyzer / scheduler 各自可以獨立 scale 跟 monitor
+- **Failure isolation**:analyzer 因為 OpenAI rate limit 慢,不影響 fetcher 快速處理
+- **Queue routing**:每個 service 只 listen 自己的 queue,不會搶 task
+- **(Tradeoff)**:Free tier 5 service 限制只能塞 Postgres + Redis + 3 service,所以 Beat 升 Hobby 才放進去
+
+#### 為什麼用 Railway variable reference (`${{Postgres.PGUSER}}`)?
+- **不用手 copy connection string** — Railway resolve 時直接拿 Postgres addon 的當下值
+- **Postgres password 重置 / hostname 換** → reference 自動更新 → service 不用改設定
+- **Internal network**:reference 解析出來是 `postgres.railway.internal`(private network),沒走 public internet → 比較安全 + 沒 egress 費
+
+#### 為什麼 backend service 用 `pre-deploy` 跑 alembic?
+**我們沒用**(start command 是 `sh -c 'alembic upgrade head && uvicorn ...'`)。
+- 簡單:start command 一條把 migration + server 連 chain 起來
+- 缺點:每次 deploy 都跑 alembic(idempotent 但 wasted 0.5 秒)
+- 缺點:migration 失敗 = container 永遠起不來 = stuck deploy(但這也是想要的行為)
+
+理想做法是用 Railway 的 **pre-deploy step**(在 service 啟動之前跑一次性命令),但 Railway free / hobby plan 對這個支援不完整。Spec §13 之後可以拉到 Terraform 用 ECS one-shot task 更乾淨。
+
+#### 為什麼 Vercel + Railway 混搭,不全在 Railway?
+- **Vercel 為 Next.js 量身打造** — Edge CDN、ISR、Image Optimization、preview deploys 全自動
+- **Railway 可以跑 Next.js** 但要自己處理 build / serving / cache
+- **業界 default**:Next.js 跟 Vercel 同公司(Vercel 出的 Next.js),整合最深
+- **成本**:Vercel Hobby 免費,Railway 跑 Next.js 要計入 service quota
+
+---
+
+### 過程中踩到的坑(總集)
+
+| # | 問題 | 修法 | 教訓 |
+|---|---|---|---|
+| 1 | Railpack 沒讀 backend root | UI 設 Root Directory + 按 Update | UI update 不是 Enter,要找 button |
+| 2 | `$PORT` 字面不展開 | start command 包 `sh -c '...'` | exec form vs shell form |
+| 3 | Domain target port 8000 vs app 8080 | Domain edit port → 8080 | EXPOSE 不該 hardcode |
+| 4 | Healthcheck 套用到 Celery | 從 railway.json 拿掉,backend UI 個別設 | 共用 config 跟 per-service 要分 |
+| 5 | Beat 寫 schedule 權限不夠 | `--schedule=/tmp/celerybeat-schedule` | Dockerfile 要 chown 目錄不只檔案 |
+| 6 | OpenAI key 401 全失敗 | 重貼新 key + reset FAILED events | `failure_reason` 欄位救命 |
+| 7 | Vercel 全 404 | Deployment Protection 關 | Vercel 預設保護要主動關 |
+
+---
+
+### M9 驗收狀態
+
+- [x] Railway 4 個 service 全綠(backend / worker / analyzer / beat)
+- [x] Postgres + Redis addons online
+- [x] backend `/api/v1/health` + `/api/v1/health/ready` 都回 200
+- [x] 真實 OpenAI call 在 production 工作 — 20 events 全 ANALYZED
+- [x] Vercel frontend 任何人可訪問
+- [x] Frontend → Backend CORS 正確(`*.vercel.app` regex 工作)
+- [x] Backfill 跑進 production DB(2200+ price snapshots)
+- [x] Validator 跑出 outcomes(FRED 56% / SEC 0% / FOMC 25% / EARNINGS no data)
+- [x] Dashboard 顯示真實 accuracy 數字
+- [x] Push to main → 4 個 service 自動 redeploy(zero-downtime 為主)
+
+### 真實 production 表現
+
+```
+20 events  (3 days ago ~ 3 months ago, depending on source cadence)
+36 predictions
+~30 outcomes(7d window 全部 valid,1h/24h 視週末跳過)
+
+Accuracy 數字:
+  FRED (CPI macro)    56%   18 validated  ← 比 random 略好
+  SEC (8-K filings)    0%    4 validated  ← 樣本太小
+  FOMC                25%    8 validated  ← NEUTRAL threshold 陷阱
+  EARNINGS           N/A    no outcomes
+
+Cost:
+  - Railway:約 $2-3/月(Hobby plan 4 services)
+  - Vercel:$0(Hobby plan)
+  - OpenAI:約 $0.01/天(LLM_DAILY_COST_CAP_USD=1.0)
+  - 總計:< $4/月
+```
+
+**Production 系統 24/7 自動跑** — Beat 每分鐘 trigger analyzer、每 15 分鐘抓 SEC、每天抓 FOMC + earnings。**完全 unattended**。
 
 ---
 
