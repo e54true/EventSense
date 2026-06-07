@@ -24,8 +24,11 @@ from app.schemas.raw_event import RawEvent
 
 logger = structlog.get_logger(__name__)
 
-# Only emit reports filed within the last N days so backfill stays bounded.
-LOOKBACK_DAYS = 30
+# Lookback window for earnings reports. 120 days = 4 months > 1 quarter,
+# guaranteeing we always capture each watchlist company's most recent report
+# regardless of which week of the quarter we poll (vs. 30 days which would
+# miss companies whose latest earnings landed > 1 month ago).
+LOOKBACK_DAYS = 120
 
 
 def _earnings_history_rows(ticker: str) -> list[dict[str, Any]]:
