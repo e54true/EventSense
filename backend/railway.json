@@ -5,9 +5,7 @@
     "dockerfilePath": "Dockerfile"
   },
   "deploy": {
-    "_comment": "Healthcheck path matches the cheap liveness endpoint. Railway will mark a deploy successful only after this returns 200.",
-    "healthcheckPath": "/api/v1/health",
-    "healthcheckTimeout": 60,
+    "_comment": "Healthcheck is NOT set here — only backend service serves HTTP. Worker/analyzer/beat run Celery and have no /health endpoint, so a shared healthcheck path would fail their deploys. backend service sets healthcheckPath via Railway UI.",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 5
   }
