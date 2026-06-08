@@ -15,21 +15,47 @@ import {
   YAxis,
 } from "recharts";
 
+import { MacroContextPanel } from "@/components/MacroContextPanel";
 import { api } from "@/lib/api";
-import type { EventSource, OutcomeWindow } from "@/lib/types";
+import type { EventSource, OutcomeWindow, PredictionKind } from "@/lib/types";
 
 const SOURCES: EventSource[] = ["FRED", "SEC_EDGAR", "FOMC", "EARNINGS"];
 const WINDOWS: OutcomeWindow[] = ["1h", "24h", "7d"];
+const KINDS: PredictionKind[] = ["MARKET", "COMPANY"];
 
 export default function DashboardPage() {
   const overall = useQuery({
     queryKey: ["accuracy.overall"],
     queryFn: () => api.getAccuracy(),
   });
+  const indicators = useQuery({
+    queryKey: ["indicators.latest"],
+    queryFn: () => api.getIndicatorsLatest(),
+  });
 
   return (
     <div className="space-y-8">
       <HeroSection rate={overall.data?.alignment_rate} total={overall.data?.total_outcomes} />
+
+      <MacroContextPanel
+        title="Current macro state"
+        subtitle="latest indicator values + 30d change"
+        indicators={indicators.data?.indicators ?? []}
+      />
+
+      <section>
+        <h2 className="text-sm font-semibold text-slate-900 uppercase tracking-wide mb-3">
+          Accuracy by kind
+          <span className="ml-2 text-slate-400 font-normal normal-case">
+            — does the v2 analyzer call the market or the company better?
+          </span>
+        </h2>
+        <AccuracyBarChart
+          dimension="kind"
+          labels={KINDS}
+          query={(value) => api.getAccuracy({ kind: value as PredictionKind })}
+        />
+      </section>
 
       <section>
         <h2 className="text-sm font-semibold text-slate-900 uppercase tracking-wide mb-3">
@@ -102,7 +128,7 @@ function AccuracyBarChart({
   labels,
   query,
 }: {
-  dimension: "source" | "window";
+  dimension: "source" | "window" | "kind";
   labels: string[];
   query: (
     value: string,

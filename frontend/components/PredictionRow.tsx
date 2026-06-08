@@ -1,6 +1,7 @@
 import type { PredictionRead, PredictionWithOutcomes } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { DirectionBadge } from "./DirectionBadge";
+import { KindBadge } from "./KindBadge";
 import { OutcomesTable } from "./OutcomesTable";
 
 const MAGNITUDE_STYLE: Record<PredictionRead["magnitude"], string> = {
@@ -35,6 +36,7 @@ export function PredictionRow({ prediction }: Props) {
         <span className="font-mono text-base font-bold text-slate-900 min-w-16">
           {prediction.ticker}
         </span>
+        <KindBadge kind={prediction.kind} />
         <DirectionBadge direction={prediction.direction} />
         <span className={cn("text-xs uppercase tracking-wider", MAGNITUDE_STYLE[prediction.magnitude])}>
           {prediction.magnitude}

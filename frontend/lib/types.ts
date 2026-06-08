@@ -88,9 +88,34 @@ export interface EventListResponse {
   meta: PaginationMeta;
 }
 
+export interface IndicatorSnapshotRead {
+  indicator_key: string;
+  value: number;
+  observed_at: string; // ISO 8601
+  delta_30d: number | null;
+}
+
+export interface RecentEventRead {
+  published_at: string;
+  source: string;
+  event_type: string;
+  title: string;
+}
+
+export interface EventContextRead {
+  lookback_days: number;
+  latest_indicators: IndicatorSnapshotRead[];
+  recent_events: RecentEventRead[];
+}
+
 export interface EventDetailResponse {
   data: EventRead;
   predictions: PredictionWithOutcomes[];
+  context: EventContextRead;
+}
+
+export interface IndicatorsLatestResponse {
+  indicators: IndicatorSnapshotRead[];
 }
 
 export interface AccuracyResponse {

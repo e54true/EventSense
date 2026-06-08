@@ -9,9 +9,11 @@ import { format, formatDistanceToNow } from "date-fns";
 
 import { api } from "@/lib/api";
 import { EventDetailResponse, PredictionWithOutcomes } from "@/lib/types";
-import { SourceBadge } from "@/components/SourceBadge";
+import { MacroContextPanel } from "@/components/MacroContextPanel";
 import { PredictionRow } from "@/components/PredictionRow";
 import { PriceChart } from "@/components/PriceChart";
+import { RecentEventsTimeline } from "@/components/RecentEventsTimeline";
+import { SourceBadge } from "@/components/SourceBadge";
 
 export function EventDetailClient({ id }: { id: string }) {
   const { data, isLoading, error } = useQuery<EventDetailResponse>({
@@ -31,8 +33,10 @@ export function EventDetailClient({ id }: { id: string }) {
     return <ErrorBlock title="Not found" detail="No event with this ID." />;
   }
 
-  const { data: event, predictions } = data;
+  const { data: event, predictions, context } = data;
   const totalCost = predictions.reduce((acc, p) => acc + p.llm_cost_usd, 0);
+  const marketPredictions = predictions.filter((p) => p.kind === "MARKET");
+  const companyPredictions = predictions.filter((p) => p.kind === "COMPANY");
   const publishedAgo = formatDistanceToNow(new Date(event.published_at), {
     addSuffix: true,
   });
@@ -139,15 +143,32 @@ export function EventDetailClient({ id }: { id: string }) {
             FETCHED event should pick up an analysis shortly.
           </div>
         ) : (
-          <ul className="space-y-2.5">
-            {predictions.map((p) => (
-              <li key={p.id}>
-                <PredictionRow prediction={p} />
-              </li>
-            ))}
-          </ul>
+          <div className="space-y-5">
+            <PredictionGroup
+              heading="Market reaction (SPY / QQQ)"
+              predictions={marketPredictions}
+              emptyHint="No MARKET impacts on this event — the analyzer thought the macro stage was neutral."
+            />
+            {companyPredictions.length > 0 && (
+              <PredictionGroup
+                heading="Company reaction"
+                predictions={companyPredictions}
+              />
+            )}
+          </div>
         )}
       </section>
+
+      <MacroContextPanel
+        title={`Macro context (at ${format(new Date(event.published_at), "PP")})`}
+        subtitle={`indicator values, 30d change`}
+        indicators={context.latest_indicators}
+      />
+
+      <RecentEventsTimeline
+        events={context.recent_events}
+        lookbackDays={context.lookback_days}
+      />
 
       <details className="rounded-2xl border border-slate-200/80 bg-white shadow-sm">
         <summary className="cursor-pointer p-4 text-sm font-medium text-slate-700 select-none flex items-center justify-between">
@@ -183,6 +204,40 @@ function PredictionsHeader({
         <div className="text-xs text-slate-500 font-mono tabular-nums">
           Total cost ${totalCost.toFixed(5)}
         </div>
+      )}
+    </div>
+  );
+}
+
+function PredictionGroup({
+  heading,
+  predictions,
+  emptyHint,
+}: {
+  heading: string;
+  predictions: PredictionWithOutcomes[];
+  emptyHint?: string;
+}) {
+  return (
+    <div>
+      <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
+        {heading}
+        <span className="ml-2 text-slate-400 normal-case font-normal">
+          ({predictions.length})
+        </span>
+      </h3>
+      {predictions.length === 0 ? (
+        emptyHint ? (
+          <p className="text-xs text-slate-500 italic px-1">{emptyHint}</p>
+        ) : null
+      ) : (
+        <ul className="space-y-2.5">
+          {predictions.map((p) => (
+            <li key={p.id}>
+              <PredictionRow prediction={p} />
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );

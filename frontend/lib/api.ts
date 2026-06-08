@@ -9,7 +9,9 @@ import type {
   EventDetailResponse,
   EventListResponse,
   EventSource,
+  IndicatorsLatestResponse,
   OutcomeWindow,
+  PredictionKind,
   PriceRangeResponse,
 } from "./types";
 
@@ -62,15 +64,20 @@ export const api = {
     ticker?: string;
     window?: OutcomeWindow;
     model?: string;
+    kind?: PredictionKind;
   }): Promise<AccuracyResponse> => {
     const params = new URLSearchParams();
     if (filters?.source) params.set("source", filters.source);
     if (filters?.ticker) params.set("ticker", filters.ticker);
     if (filters?.window) params.set("window", filters.window);
     if (filters?.model) params.set("model", filters.model);
+    if (filters?.kind) params.set("kind", filters.kind);
     const qs = params.toString();
     return request(`/api/v1/accuracy${qs ? `?${qs}` : ""}`);
   },
+
+  getIndicatorsLatest: (): Promise<IndicatorsLatestResponse> =>
+    request(`/api/v1/indicators/latest`),
 };
 
 export { APIError };
