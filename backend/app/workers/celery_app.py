@@ -42,6 +42,7 @@ celery_app = Celery(
         "app.tasks.prices",
         "app.tasks.analyzers",
         "app.tasks.validators",
+        "app.tasks.indicators",
     ],
 )
 
@@ -65,6 +66,7 @@ celery_app.conf.update(
 celery_app.conf.task_routes = {
     "app.tasks.fetchers.*": {"queue": "fetch_queue"},
     "app.tasks.prices.*": {"queue": "fetch_queue"},  # prices are I/O-bound like fetchers
+    "app.tasks.indicators.*": {"queue": "fetch_queue"},  # indicators are HTTP fetches too
     "app.tasks.analyzers.*": {"queue": "analyze_queue"},
     # Validators have their own queue name (per spec §8) but the existing
     # fetch worker also listens to it — see docker-compose.yml. Keeps queue
@@ -75,12 +77,20 @@ celery_app.conf.task_routes = {
 # Beat schedule — Beat is a *separate process* that enqueues these task names on cron.
 # Workers pick them up from the broker as usual.
 celery_app.conf.beat_schedule = {
-    "fred-cpi-hourly": {
+    "fred-events-hourly": {
+        # Task name kept as `fetch_fred_cpi_task` for back-compat with Beat's
+        # persisted schedule; the body now covers CPI + NFP + GDP via the
+        # multi-series FRED_EVENT_SERIES registry.
         "task": "app.tasks.fetchers.fetch_fred_cpi_task",
-        # FRED CPI is monthly so polling hourly is overkill — but the spec wants hourly
-        # for the general "FRED" cadence (§7.1) and most polls will just be a no-op
-        # short-circuited by the (source, external_id) unique check.
+        # All three series release monthly/quarterly — hourly polling is overkill
+        # but (source, external_id) dedup makes most polls a free no-op.
         "schedule": crontab(minute=0),
+    },
+    "fred-indicators-daily": {
+        "task": "app.tasks.indicators.fetch_fred_indicators_task",
+        # DGS10 / DGS2 refresh daily around 16:00 ET (after Treasury auctions
+        # close); FRED republishes ~21:00 UTC. 22:15 UTC catches the fresh value.
+        "schedule": crontab(hour=22, minute=15),
     },
     "sec-edgar-15min": {
         "task": "app.tasks.fetchers.fetch_sec_edgar_task",

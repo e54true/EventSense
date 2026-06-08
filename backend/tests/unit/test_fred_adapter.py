@@ -1,4 +1,4 @@
-"""Unit tests for FRED adapter — parsing logic, no real HTTP, no DB.
+"""Unit tests for FRED adapter — parsing + multi-series iteration, no real HTTP, no DB.
 
 The adapter is pure (returns list[RawEvent]); persistence is tested in
 tests/integration/test_event_writer.py.
@@ -10,7 +10,12 @@ import httpx
 import pytest
 from pytest_httpx import HTTPXMock
 
-from app.adapters.fred import FRED_API_BASE, _fetch_series_observations, fetch_new
+from app.adapters.fred import (
+    FRED_API_BASE,
+    FRED_EVENT_SERIES,
+    _fetch_series_observations,
+    fetch_new,
+)
 from app.db.models import EventSource
 
 
@@ -46,7 +51,11 @@ async def test_fetch_observations_raises_on_5xx(httpx_mock: HTTPXMock) -> None:
 
 
 async def test_fetch_new_skips_missing_value() -> None:
-    """value=='.' (FRED's missing-data marker) and non-numeric values must be skipped."""
+    """value=='.' (FRED's missing-data marker) and non-numeric values must be skipped.
+
+    Mock returns the same observation list for every series, so the assertions
+    are per-series (n_events_per_series * len(FRED_EVENT_SERIES)).
+    """
     observations = [
         {"date": "2026-04-01", "value": "332.4"},
         {"date": "2026-03-01", "value": "."},  # missing — skip
@@ -59,11 +68,39 @@ async def test_fetch_new_skips_missing_value() -> None:
     ):
         events = await fetch_new()
 
-    assert len(events) == 2
+    # 2 valid rows x 3 series in FRED_EVENT_SERIES = 6 events
+    assert len(events) == 2 * len(FRED_EVENT_SERIES)
     assert all(e.source == EventSource.FRED for e in events)
-    assert events[0].external_id == "CPIAUCSL:2026-04-01"
-    assert events[0].payload["value"] == 332.4
-    assert events[1].external_id == "CPIAUCSL:2026-01-01"
+
+
+async def test_fetch_new_emits_distinct_external_id_per_series() -> None:
+    """Each series writes its own (series_id:date) external_id — no cross-series collision."""
+    observations = [{"date": "2026-04-01", "value": "1.23"}]
+    with patch(
+        "app.adapters.fred._fetch_series_observations",
+        new=AsyncMock(return_value=observations),
+    ):
+        events = await fetch_new()
+
+    external_ids = {e.external_id for e in events}
+    expected = {f"{spec.series_id}:2026-04-01" for spec in FRED_EVENT_SERIES}
+    assert external_ids == expected
+
+
+async def test_fetch_new_event_types_align_with_spec() -> None:
+    """CPI_RELEASE / NFP_RELEASE / GDP_RELEASE one event_type per series spec."""
+    observations = [{"date": "2026-04-01", "value": "1.0"}]
+    with patch(
+        "app.adapters.fred._fetch_series_observations",
+        new=AsyncMock(return_value=observations),
+    ):
+        events = await fetch_new()
+
+    by_event_type = {e.event_type for e in events}
+    assert by_event_type == {spec.event_type for spec in FRED_EVENT_SERIES}
+    assert "CPI_RELEASE" in by_event_type
+    assert "NFP_RELEASE" in by_event_type
+    assert "GDP_RELEASE" in by_event_type
 
 
 async def test_fetch_new_raises_runtime_error_without_key(

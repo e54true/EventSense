@@ -1,11 +1,20 @@
-"""FRED (Federal Reserve Economic Data) adapter.
+"""FRED (Federal Reserve Economic Data) adapter — multi-series.
 
 API docs: https://fred.stlouisfed.org/docs/api/fred/
+
+Series we treat as discrete events (each new release → one RawEvent):
+- CPIAUCSL  Consumer Price Index for All Urban Consumers (monthly)
+- PAYEMS    Total Nonfarm Payrolls / NFP (monthly)
+- GDPC1     Real Gross Domestic Product (quarterly)
+
+Daily numeric series (10Y / 2Y yields) live in adapters/indicators_fred.py — they
+re-use the `_fetch_series_observations` helper here.
 
 Pure adapter: returns list[RawEvent], performs no DB writes. The Celery task
 hands the result to event_writer.persist() which deduplicates and inserts.
 """
 
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -25,7 +34,40 @@ from app.schemas.raw_event import RawEvent
 logger = structlog.get_logger(__name__)
 
 FRED_API_BASE = "https://api.stlouisfed.org/fred"
-CPI_SERIES_ID = "CPIAUCSL"
+
+
+@dataclass(frozen=True, slots=True)
+class FredSeriesSpec:
+    """One FRED series we ingest as discrete events.
+
+    `event_type` is the column value in the events table (CPI_RELEASE etc).
+    `series_name` lands in payload for prompt readability.
+    """
+
+    series_id: str
+    series_name: str
+    event_type: str
+    # Empty for macro series — the Analyzer decides per-ticker impact.
+    affected_tickers: list[str] = field(default_factory=list)
+
+
+FRED_EVENT_SERIES: list[FredSeriesSpec] = [
+    FredSeriesSpec(
+        series_id="CPIAUCSL",
+        series_name="Consumer Price Index for All Urban Consumers",
+        event_type="CPI_RELEASE",
+    ),
+    FredSeriesSpec(
+        series_id="PAYEMS",
+        series_name="All Employees, Total Nonfarm (NFP)",
+        event_type="NFP_RELEASE",
+    ),
+    FredSeriesSpec(
+        series_id="GDPC1",
+        series_name="Real Gross Domestic Product",
+        event_type="GDP_RELEASE",
+    ),
+]
 
 
 @retry(
@@ -35,7 +77,10 @@ CPI_SERIES_ID = "CPIAUCSL"
     reraise=True,
 )
 async def _fetch_series_observations(series_id: str, limit: int = 12) -> list[dict[str, Any]]:
-    """Fetch the most recent N observations for a FRED series."""
+    """Fetch the most recent N observations for a FRED series.
+
+    Shared with adapters/indicators_fred.py — keep the signature stable.
+    """
     settings = get_settings()
     if not settings.fred_api_key:
         raise RuntimeError("FRED_API_KEY not configured")
@@ -56,7 +101,9 @@ async def _fetch_series_observations(series_id: str, limit: int = 12) -> list[di
         return observations
 
 
-def _observation_to_raw_event(obs: dict[str, Any], series_id: str) -> RawEvent | None:
+def _observation_to_raw_event(
+    obs: dict[str, Any], spec: FredSeriesSpec
+) -> RawEvent | None:
     """Convert one FRED observation to a RawEvent. None if the row is missing/invalid."""
     if obs.get("value") == ".":  # FRED's missing-data marker
         return None
@@ -69,28 +116,32 @@ def _observation_to_raw_event(obs: dict[str, Any], series_id: str) -> RawEvent |
     release_date = obs["date"]  # 'YYYY-MM-DD'
     return RawEvent(
         source=EventSource.FRED,
-        event_type="ECONOMIC_RELEASE",
-        external_id=f"{series_id}:{release_date}",
-        title=f"CPI release for {release_date}: {value}",
+        event_type=spec.event_type,
+        external_id=f"{spec.series_id}:{release_date}",
+        title=f"{spec.series_name} release for {release_date}: {value}",
         payload={
-            "series_id": series_id,
-            "series_name": "Consumer Price Index for All Urban Consumers",
+            "series_id": spec.series_id,
+            "series_name": spec.series_name,
             "value": value,
             "release_date": release_date,
             "raw": obs,
         },
-        affected_tickers=[],  # CPI affects market-wide; per-ticker mapping is Analyzer's job
+        affected_tickers=list(spec.affected_tickers),
         published_at=datetime.fromisoformat(release_date).replace(tzinfo=UTC),
     )
 
 
 async def fetch_new() -> list[RawEvent]:
-    """Fetch latest CPI observations and return them as RawEvents (no DB writes)."""
-    log = logger.bind(source="FRED", series_id=CPI_SERIES_ID)
+    """Pull latest observations for every event-series and return them as RawEvents."""
+    log = logger.bind(source="FRED", series_count=len(FRED_EVENT_SERIES))
     log.info("fred.fetch.started")
 
-    observations = await _fetch_series_observations(CPI_SERIES_ID)
-    events = [e for obs in observations if (e := _observation_to_raw_event(obs, CPI_SERIES_ID))]
+    events: list[RawEvent] = []
+    for spec in FRED_EVENT_SERIES:
+        observations = await _fetch_series_observations(spec.series_id)
+        events.extend(
+            e for obs in observations if (e := _observation_to_raw_event(obs, spec))
+        )
 
-    log.info("fred.fetch.completed", parsed=len(events), total_observations=len(observations))
+    log.info("fred.fetch.completed", parsed=len(events))
     return events
