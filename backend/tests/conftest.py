@@ -16,6 +16,24 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.config.settings import get_settings
 
 
+@pytest_asyncio.fixture(autouse=True)
+async def _dispose_app_engine_between_tests() -> AsyncIterator[None]:
+    """Tear down the FastAPI app's global asyncpg pool after every test.
+
+    Why: app/db/session.py creates a module-level engine that asyncpg binds
+    to whichever event loop opened the first connection. pytest-asyncio gives
+    each test its own loop, so reusing the pooled connection from a previous
+    test raises "got Future attached to a different loop". Disposing forces
+    the engine to mint fresh connections on the next test's loop.
+
+    No-op for unit tests that never touch the engine.
+    """
+    yield
+    from app.db import session as _session
+
+    await _session.engine.dispose()
+
+
 @pytest_asyncio.fixture
 async def db_session() -> AsyncIterator[AsyncSession]:
     """Yield an async session against the configured DB, truncating events before each test."""

@@ -108,10 +108,25 @@ export interface EventContextRead {
   recent_events: RecentEventRead[];
 }
 
+export type DocumentKind =
+  | "FILING_COVER"
+  | "PRESS_RELEASE"
+  | "EXHIBIT"
+  | "TRANSCRIPT";
+
+export interface AttachedDocumentRead {
+  doc_kind: DocumentKind;
+  content_text: string;
+  raw_url: string;
+  byte_size: number;
+  fetched_at: string; // ISO 8601
+}
+
 export interface EventDetailResponse {
   data: EventRead;
   predictions: PredictionWithOutcomes[];
   context: EventContextRead;
+  attached_documents: AttachedDocumentRead[];
 }
 
 export interface IndicatorsLatestResponse {

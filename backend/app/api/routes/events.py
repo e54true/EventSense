@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config.settings import get_settings
-from app.db.models import Event, Prediction
+from app.db.models import DocumentKind, Event, EventDocument, Prediction
 from app.db.session import get_db
 from app.schemas.event import EventListResponse, EventRead, PaginationMeta
 from app.schemas.prediction import PredictionWithOutcomes
@@ -43,12 +43,27 @@ class EventContextRead(BaseModel):
     recent_events: list[RecentEventRead]
 
 
+class AttachedDocumentRead(BaseModel):
+    """A document body downloaded for this event (Phase B+).
+
+    Carries full content_text — the prompt-builder still truncates to keep
+    LLM token cost bounded, but the UI shows whatever the storage cap allows.
+    """
+
+    doc_kind: DocumentKind
+    content_text: str
+    raw_url: str
+    byte_size: int
+    fetched_at: datetime
+
+
 class EventDetailResponse(BaseModel):
-    """Single event with its predictions + outcomes + macro context."""
+    """Single event with its predictions + outcomes + macro context + attached docs."""
 
     data: EventRead
     predictions: list[PredictionWithOutcomes]
     context: EventContextRead
+    attached_documents: list[AttachedDocumentRead]
 
 
 @router.get("", response_model=EventListResponse)
@@ -95,7 +110,10 @@ async def get_event(
     event = await db.scalar(
         select(Event)
         .where(Event.id == event_id)
-        .options(selectinload(Event.predictions).selectinload(Prediction.outcomes))
+        .options(
+            selectinload(Event.predictions).selectinload(Prediction.outcomes),
+            selectinload(Event.documents),
+        )
     )
     if event is None:
         raise HTTPException(status_code=404, detail="Event not found")
@@ -126,6 +144,16 @@ async def get_event(
         )
         for r in ctx.recent_events
     ]
+    documents = [
+        AttachedDocumentRead(
+            doc_kind=d.doc_kind,
+            content_text=d.content_text,
+            raw_url=d.raw_url,
+            byte_size=d.byte_size,
+            fetched_at=d.fetched_at,
+        )
+        for d in _sorted_documents(event.documents)
+    ]
     return EventDetailResponse(
         data=EventRead.model_validate(event),
         predictions=[PredictionWithOutcomes.model_validate(p) for p in event.predictions],
@@ -134,4 +162,18 @@ async def get_event(
             latest_indicators=indicators,
             recent_events=recent,
         ),
+        attached_documents=documents,
     )
+
+
+_DOC_ORDER: dict[DocumentKind, int] = {
+    DocumentKind.PRESS_RELEASE: 0,
+    DocumentKind.FILING_COVER: 1,
+    DocumentKind.EXHIBIT: 2,
+    DocumentKind.TRANSCRIPT: 3,
+}
+
+
+def _sorted_documents(docs: list[EventDocument]) -> list[EventDocument]:
+    """PRESS_RELEASE first (most useful for earnings 8-Ks), then cover, exhibits, transcript."""
+    return sorted(docs, key=lambda d: _DOC_ORDER.get(d.doc_kind, 99))

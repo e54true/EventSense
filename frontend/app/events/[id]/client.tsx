@@ -9,6 +9,7 @@ import { format, formatDistanceToNow } from "date-fns";
 
 import { api } from "@/lib/api";
 import { EventDetailResponse, PredictionWithOutcomes } from "@/lib/types";
+import { AttachedDocumentsPanel } from "@/components/AttachedDocumentsPanel";
 import { MacroContextPanel } from "@/components/MacroContextPanel";
 import { PredictionRow } from "@/components/PredictionRow";
 import { PriceChart } from "@/components/PriceChart";
@@ -158,6 +159,8 @@ export function EventDetailClient({ id }: { id: string }) {
           </div>
         )}
       </section>
+
+      <AttachedDocumentsPanel documents={data.attached_documents} />
 
       <MacroContextPanel
         title={`Macro context (at ${format(new Date(event.published_at), "PP")})`}

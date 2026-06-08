@@ -11,7 +11,14 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config.settings import get_settings
-from app.db.models import Event, EventSource, EventStatus, Indicator
+from app.db.models import (
+    DocumentKind,
+    Event,
+    EventDocument,
+    EventSource,
+    EventStatus,
+    Indicator,
+)
 from app.main import app
 
 
@@ -114,6 +121,62 @@ async def test_event_detail_returns_context_block(clean_db: AsyncSession) -> Non
     assert "DGS10" in indicators_by_key
     assert indicators_by_key["DGS10"]["value"] == 4.50
     assert indicators_by_key["DGS10"]["delta_30d"] == pytest.approx(0.25)
+
+
+async def test_event_detail_returns_attached_documents_sorted(
+    clean_db: AsyncSession,
+) -> None:
+    """attached_documents block returns PRESS_RELEASE first, then FILING_COVER."""
+    trigger_at = datetime(2026, 6, 8, 12, 0, tzinfo=UTC)
+    trigger = await _seed_event_at(
+        clean_db, external_id="trigger-with-docs", published_at=trigger_at
+    )
+    clean_db.add_all(
+        [
+            EventDocument(
+                event_id=trigger.id,
+                doc_kind=DocumentKind.FILING_COVER,
+                content_text="Item 2.02 - Earnings Results. " * 30,
+                raw_url="https://www.sec.gov/.../nvda-8k.htm",
+                byte_size=900,
+                fetched_at=datetime.now(UTC),
+            ),
+            EventDocument(
+                event_id=trigger.id,
+                doc_kind=DocumentKind.PRESS_RELEASE,
+                content_text="NVIDIA Reports Q1 Revenue of $81.6B. " * 30,
+                raw_url="https://www.sec.gov/.../ex991.htm",
+                byte_size=1110,
+                fetched_at=datetime.now(UTC),
+            ),
+        ]
+    )
+    await clean_db.commit()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(f"/api/v1/events/{trigger.id}")
+    assert resp.status_code == 200
+    docs = resp.json()["attached_documents"]
+    assert len(docs) == 2
+    # PRESS_RELEASE sorts first per the API's natural order
+    assert docs[0]["doc_kind"] == "PRESS_RELEASE"
+    assert docs[1]["doc_kind"] == "FILING_COVER"
+    assert "NVIDIA Reports" in docs[0]["content_text"]
+    assert docs[0]["byte_size"] == 1110
+
+
+async def test_event_detail_attached_documents_empty_when_none(
+    clean_db: AsyncSession,
+) -> None:
+    trigger = await _seed_event_at(
+        clean_db, external_id="trigger-no-docs", published_at=datetime(2026, 6, 8, tzinfo=UTC)
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(f"/api/v1/events/{trigger.id}")
+    assert resp.status_code == 200
+    assert resp.json()["attached_documents"] == []
 
 
 async def test_event_detail_404_for_unknown_id(clean_db: AsyncSession) -> None:
