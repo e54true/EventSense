@@ -50,12 +50,18 @@ def _earnings_history_rows(ticker: str) -> list[dict[str, Any]]:
             report_date = idx.to_pydatetime()
             if report_date.tzinfo is None:
                 report_date = report_date.replace(tzinfo=UTC)
+            # yfinance returns surprisePercent as a decimal (0.0554 = 5.54%);
+            # normalize to percent form here so the rest of the pipeline (title
+            # rendering, payload export) doesn't need to know yfinance's quirk.
+            surprise_decimal = _safe_float(row.get("surprisePercent"))
             rows.append(
                 {
                     "report_date": report_date,
                     "eps_actual": _safe_float(row.get("epsActual")),
                     "eps_estimate": _safe_float(row.get("epsEstimate")),
-                    "surprise_pct": _safe_float(row.get("surprisePercent")),
+                    "surprise_pct": (
+                        surprise_decimal * 100.0 if surprise_decimal is not None else None
+                    ),
                 }
             )
         except Exception:  # noqa: S112 — bad row, skip silently

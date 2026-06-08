@@ -10,7 +10,12 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
-from app.adapters.earnings import _row_to_raw_event, _safe_float, fetch_new
+from app.adapters.earnings import (
+    _earnings_history_rows,
+    _row_to_raw_event,
+    _safe_float,
+    fetch_new,
+)
 from app.db.models import EventSource
 
 
@@ -87,6 +92,23 @@ async def test_fetch_new_filters_by_cutoff() -> None:
     with patch("app.adapters.earnings._earnings_history_rows", return_value=rows):
         events = await fetch_new()
     assert len(events) == 1
+
+
+def test_earnings_history_rows_converts_decimal_to_percent() -> None:
+    """yfinance returns surprisePercent as a decimal (0.0554); we normalize to 5.54."""
+    df = pd.DataFrame(
+        {
+            "epsActual": [1.87],
+            "epsEstimate": [1.77],
+            "surprisePercent": [0.0554],
+        },
+        index=pd.to_datetime(["2026-04-30"], utc=True),
+    )
+    fake_ticker = type("T", (), {"earnings_history": df})()
+    with patch("app.adapters.earnings.yf.Ticker", return_value=fake_ticker):
+        rows = _earnings_history_rows("NVDA")
+    assert len(rows) == 1
+    assert rows[0]["surprise_pct"] == pytest.approx(5.54)
 
 
 async def test_fetch_new_returns_empty_on_yfinance_exception() -> None:
