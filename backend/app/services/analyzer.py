@@ -24,14 +24,21 @@ to ANALYZED or FAILED, future polls won't pick the event up again.
 """
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import get_settings
-from app.db.models import Event, EventStatus, Prediction, PredictionKind
+from app.db.models import (
+    Event,
+    EventDocument,
+    EventSource,
+    EventStatus,
+    Prediction,
+    PredictionKind,
+)
 from app.db.session import transient_session
 from app.llm import clients
 from app.llm.cost import estimate_cost_usd, today_spend_usd
@@ -47,6 +54,12 @@ _MARKET_TICKERS: frozenset[str] = frozenset({"SPY", "QQQ"})
 # Event types we treat as "company-specific" — only these are allowed to have
 # kind=COMPANY impacts. Everything else (macro releases) emits MARKET-only.
 _COMPANY_EVENT_TYPES: frozenset[str] = frozenset({"8K_FILING", "EARNINGS_REPORT"})
+
+# Phase B: how long to wait for SEC document body fetch before analyzing
+# anyway. 8-K events that arrive without yet-fetched documents get held back
+# from the analyze queue for this long; after that we fall through with
+# whatever's attached (possibly nothing — graceful degrade).
+_DOC_WAIT_SECONDS = 300
 
 logger = structlog.get_logger(__name__)
 
@@ -166,10 +179,24 @@ def _build_predictions(
 
 
 async def _candidate_event_ids(db: AsyncSession, limit: int) -> list[uuid.UUID]:
-    """Cheap read-only query: which events look pending? Lock comes later, per event."""
+    """Cheap read-only query: which events look pending? Lock comes later, per event.
+
+    Phase B: 8-K events that landed in the last 5 minutes and don't yet have
+    an event_documents row are *deferred* — the document fetcher needs time
+    to run. After 5 min we fall through and analyze with whatever's there.
+    """
+    wait_cutoff = datetime.now(UTC) - timedelta(seconds=_DOC_WAIT_SECONDS)
+    has_doc = exists().where(EventDocument.event_id == Event.id)
+    # Eligible iff NOT (8-K AND fetched recently AND no docs yet).
+    not_waiting = or_(
+        Event.source != EventSource.SEC_EDGAR,
+        Event.event_type != "8K_FILING",
+        Event.fetched_at < wait_cutoff,
+        has_doc,
+    )
     result = await db.scalars(
         select(Event.id)
-        .where(Event.status == EventStatus.FETCHED)
+        .where(Event.status == EventStatus.FETCHED, not_waiting)
         .order_by(Event.published_at.asc())
         .limit(limit)
     )

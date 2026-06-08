@@ -71,6 +71,21 @@ class OutcomeWindow(StrEnum):
     D7 = "7d"
 
 
+class DocumentKind(StrEnum):
+    """Type of document attached to an event (Phase B+).
+
+    FILING_COVER  — SEC 8-K cover/index document (the form 8-K itself).
+    PRESS_RELEASE — SEC EX-99.1 exhibit (typical for item 2.02 earnings releases).
+    EXHIBIT       — Other EX-99.x exhibits, supporting materials.
+    TRANSCRIPT    — Earnings-call transcript from Whisper (Phase D).
+    """
+
+    FILING_COVER = "FILING_COVER"
+    PRESS_RELEASE = "PRESS_RELEASE"
+    EXHIBIT = "EXHIBIT"
+    TRANSCRIPT = "TRANSCRIPT"
+
+
 class Event(Base, TimestampMixin):
     """A single discrete occurrence from an official source.
 
@@ -117,6 +132,11 @@ class Event(Base, TimestampMixin):
         back_populates="event",
         cascade="all, delete-orphan",
         lazy="raise",  # force callers to explicitly opt into loading (selectinload)
+    )
+    documents: Mapped[list["EventDocument"]] = relationship(
+        back_populates="event",
+        cascade="all, delete-orphan",
+        lazy="raise",
     )
 
 
@@ -227,6 +247,47 @@ class PredictionOutcome(Base, TimestampMixin):
     validated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     prediction: Mapped["Prediction"] = relationship(back_populates="outcomes")
+
+
+class EventDocument(Base):
+    """Large per-event document body (filing text, transcript, exhibit).
+
+    Stored separately from events.payload (JSONB) so events stays small and
+    JSONB-indexable while document bodies can be 50-500 KB without bloating
+    every events SELECT. Lazy-loaded — callers must selectinload to access.
+    """
+
+    __tablename__ = "event_documents"
+    __table_args__ = (
+        UniqueConstraint("event_id", "doc_kind", name="uq_event_documents_event_kind"),
+        Index("ix_event_documents_event", "event_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    event_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("events.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    doc_kind: Mapped[DocumentKind] = mapped_column(
+        Enum(DocumentKind, name="document_kind"),
+        nullable=False,
+    )
+    content_text: Mapped[str] = mapped_column(Text, nullable=False)
+    raw_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    byte_size: Mapped[int] = mapped_column(nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    event: Mapped["Event"] = relationship(back_populates="documents")
 
 
 class PriceSnapshot(Base):

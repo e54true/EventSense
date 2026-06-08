@@ -9,6 +9,9 @@ MACRO CONTEXT (current indicators, 30-day delta in parens):
 RECENT EVENT WINDOW (past {lookback_days} days, newest first):
 {recent_events_table}
 
+ATTACHED DOCUMENTS (filing bodies, press releases, transcripts — verbatim):
+{attached_documents}
+
 WATCHLIST (only these tickers are eligible for impacts):
 {watchlist_csv}
 

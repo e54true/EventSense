@@ -7,7 +7,7 @@ not OpenAI.
 Requires Postgres (docker compose up postgres).
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -47,15 +47,18 @@ async def clean_db() -> AsyncSession:
 
 
 async def _seed_event(db: AsyncSession, ticker: str = "AAPL") -> Event:
+    # fetched_at backdated 10 minutes to clear the Phase B doc-wait delay
+    # (analyzer skips 8-K events <5min old that lack event_documents).
+    now = datetime.now(UTC)
     e = Event(
         source=EventSource.SEC_EDGAR,
         event_type="8K_FILING",
-        external_id=f"test-{ticker}-{datetime.now(UTC).timestamp()}",
+        external_id=f"test-{ticker}-{now.timestamp()}",
         title=f"{ticker} test 8-K",
         payload={"ticker": ticker, "item": "2.02"},
         affected_tickers=[ticker],
-        published_at=datetime.now(UTC),
-        fetched_at=datetime.now(UTC),
+        published_at=now,
+        fetched_at=now - timedelta(minutes=10),
         status=EventStatus.FETCHED,
     )
     db.add(e)

@@ -7,7 +7,7 @@ Exercises:
   - kind=COMPANY with off-target ticker is rejected
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -60,15 +60,18 @@ async def _seed_event(
     event_type: str,
     ticker: str | None,
 ) -> Event:
+    # Backdate fetched_at past the 5-min doc-wait window so 8-K events are
+    # eligible without needing event_documents rows in the test fixture.
+    now = datetime.now(UTC)
     e = Event(
         source=source,
         event_type=event_type,
-        external_id=f"{event_type}-{datetime.now(UTC).timestamp()}",
+        external_id=f"{event_type}-{now.timestamp()}",
         title=f"{event_type} for {ticker or 'macro'}",
         payload={"ticker": ticker} if ticker else {},
         affected_tickers=[ticker] if ticker else [],
-        published_at=datetime.now(UTC),
-        fetched_at=datetime.now(UTC),
+        published_at=now,
+        fetched_at=now - timedelta(minutes=10),
         status=EventStatus.FETCHED,
     )
     db.add(e)

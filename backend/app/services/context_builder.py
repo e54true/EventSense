@@ -16,13 +16,18 @@ import structlog
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Event, Indicator
+from app.db.models import DocumentKind, Event, EventDocument, Indicator
 
 logger = structlog.get_logger(__name__)
 
 # Window over which we compute "indicator change" (delta_30d). Aligns with the
 # default analyzer_lookback_days so the LLM sees one full window's drift.
 _DELTA_WINDOW = timedelta(days=30)
+
+# Cap per-document inlined chars in the prompt. Storage cap (in document_fetcher)
+# is 80K — this 20K keeps prompt token cost bounded even when both PRESS_RELEASE
+# and FILING_COVER are attached.
+_PROMPT_INLINE_PER_DOC_CHARS = 20_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,12 +54,22 @@ class RecentEventSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class AttachedDocument:
+    """One document attached to the triggering event (Phase B)."""
+
+    doc_kind: DocumentKind
+    content_text: str
+    raw_url: str
+
+
+@dataclass(frozen=True, slots=True)
 class AnalyzerContext:
     """Everything the v2 prompt template needs for one triggering event."""
 
     triggering_event: Event
     recent_events: list[RecentEventSummary]
     latest_indicators: dict[str, IndicatorSnapshot]
+    attached_documents: list[AttachedDocument]
     watchlist: list[str]
     lookback_days: int
 
@@ -161,6 +176,30 @@ async def _all_latest_indicators(
     return snapshots
 
 
+async def _attached_documents(
+    db: AsyncSession, triggering_event: Event
+) -> list[AttachedDocument]:
+    """Pull all event_documents rows for the triggering event, content truncated
+    to the per-document prompt cap."""
+    rows = (
+        await db.execute(
+            select(
+                EventDocument.doc_kind,
+                EventDocument.content_text,
+                EventDocument.raw_url,
+            ).where(EventDocument.event_id == triggering_event.id)
+        )
+    ).all()
+    return [
+        AttachedDocument(
+            doc_kind=r.doc_kind,
+            content_text=r.content_text[:_PROMPT_INLINE_PER_DOC_CHARS],
+            raw_url=r.raw_url,
+        )
+        for r in rows
+    ]
+
+
 async def build_context(
     db: AsyncSession,
     triggering_event: Event,
@@ -181,16 +220,19 @@ async def build_context(
         db, triggering_event, lookback_days=lookback_days, cap=recent_events_cap
     )
     indicators = await _all_latest_indicators(db, triggering_event.published_at)
+    documents = await _attached_documents(db, triggering_event)
 
     log.info(
         "context_builder.completed",
         recent_events=len(recent),
         indicator_keys=len(indicators),
+        attached_documents=len(documents),
     )
     return AnalyzerContext(
         triggering_event=triggering_event,
         recent_events=recent,
         latest_indicators=indicators,
+        attached_documents=documents,
         watchlist=watchlist,
         lookback_days=lookback_days,
     )

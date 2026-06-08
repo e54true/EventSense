@@ -130,7 +130,8 @@ build_prompt = build_prompt_v1
 
 
 def build_prompt_v2(ctx: "AnalyzerContext") -> str:  # noqa: F821 — forward ref
-    """Render the v2 prompt — triggering event + macro indicators + recent events.
+    """Render the v2 prompt — triggering event + macro indicators + recent events
+    + attached documents (Phase B).
 
     `ctx` is `app.services.context_builder.AnalyzerContext`; the import is
     deferred to avoid a circular import (context_builder reads ORM models that
@@ -146,6 +147,7 @@ def build_prompt_v2(ctx: "AnalyzerContext") -> str:  # noqa: F821 — forward re
         event_json=_json.dumps(ctx.triggering_event.payload, indent=2, default=str),
         indicators_table=_render_indicators_table(ctx.latest_indicators),
         recent_events_table=_render_recent_events_table(ctx.recent_events),
+        attached_documents=_render_attached_documents(ctx.attached_documents),
         watchlist_csv=", ".join(ctx.watchlist),
     )
 
@@ -176,6 +178,21 @@ def _render_recent_events_table(events: list[Any]) -> str:
             f"{e.published_at.date().isoformat()} | {e.source} | {e.event_type} | {e.title}"
         )
     return "\n".join(lines)
+
+
+def _render_attached_documents(docs: list[Any]) -> str:
+    """Render attached documents block — kind header + content per doc.
+
+    docs are AttachedDocument dataclasses (content_text already truncated to
+    the per-doc cap by context_builder).
+    """
+    if not docs:
+        return "(no attached documents)"
+    parts: list[str] = []
+    for d in docs:
+        kind = d.doc_kind.value if hasattr(d.doc_kind, "value") else str(d.doc_kind)
+        parts.append(f"=== {kind} (source: {d.raw_url}) ===\n{d.content_text}")
+    return "\n\n".join(parts)
 
 
 # The analyzer reads settings.analyzer_prompt_version to pick the template;

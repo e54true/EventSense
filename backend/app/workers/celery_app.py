@@ -43,6 +43,7 @@ celery_app = Celery(
         "app.tasks.analyzers",
         "app.tasks.validators",
         "app.tasks.indicators",
+        "app.tasks.documents",
     ],
 )
 
@@ -67,6 +68,7 @@ celery_app.conf.task_routes = {
     "app.tasks.fetchers.*": {"queue": "fetch_queue"},
     "app.tasks.prices.*": {"queue": "fetch_queue"},  # prices are I/O-bound like fetchers
     "app.tasks.indicators.*": {"queue": "fetch_queue"},  # indicators are HTTP fetches too
+    "app.tasks.documents.*": {"queue": "fetch_queue"},  # SEC filing body downloads
     "app.tasks.analyzers.*": {"queue": "analyze_queue"},
     # Validators have their own queue name (per spec §8) but the existing
     # fetch worker also listens to it — see docker-compose.yml. Keeps queue
@@ -137,6 +139,13 @@ celery_app.conf.beat_schedule = {
         # analyzed yet. Spec §11 M5 acceptance is "every new event automatically
         # gets predictions within 2 minutes" — 1-min cadence comfortably meets it.
         # No-op (immediate return) when nothing pending, so cost is trivial.
+        "schedule": crontab(minute="*"),
+    },
+    "fetch-8k-documents-1min": {
+        "task": "app.tasks.documents.fetch_8k_documents_task",
+        # 1-min cadence so 8-K bodies land well within the analyzer's 5-min
+        # wait window (see analyzer.py — item 2.02 events <5min old are skipped
+        # to let bodies arrive first). Idempotent on the unique constraint.
         "schedule": crontab(minute="*"),
     },
     "validator-5min": {
