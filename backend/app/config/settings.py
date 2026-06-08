@@ -68,6 +68,19 @@ class Settings(BaseSettings):
     # tasks bounded so a backlog doesn't hold a worker for 10+ minutes.
     llm_analyzer_batch_size: int = Field(default=20)
 
+    # --- v2 contextual analyzer ---
+    # Days of recent events the v2 prompt looks back over when analyzing a new
+    # event. 30 covers a full macro cycle (CPI/NFP/GDP all monthly or quarterly)
+    # without blowing prompt tokens past the daily cost cap.
+    analyzer_lookback_days: int = Field(default=30)
+    # Cap on how many recent events get inlined into the v2 prompt. The window
+    # query orders by published_at DESC, so this is "most-recent N" not random.
+    analyzer_recent_events_cap: int = Field(default=50)
+    # Which prompt template the analyzer should render. Kill switch: flip to
+    # 'v1' via env (ANALYZER_PROMPT_VERSION=v1) if v2 misbehaves in production,
+    # no redeploy needed.
+    analyzer_prompt_version: Literal["v1", "v2"] = Field(default="v2")
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -31,12 +31,22 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.settings import get_settings
-from app.db.models import Event, EventStatus, Prediction
+from app.db.models import Event, EventStatus, Prediction, PredictionKind
 from app.db.session import transient_session
 from app.llm import clients
 from app.llm.cost import estimate_cost_usd, today_spend_usd
 from app.llm.router import ModelChoice, choose_model
 from app.llm.schemas import EventAnalysis
+from app.services import context_builder
+
+# Tickers eligible for kind=MARKET impacts. The two index proxies — SPY tracks
+# S&P 500, QQQ tracks Nasdaq-100. The analyzer rejects MARKET impacts with any
+# other ticker (treating them as LLM hallucination).
+_MARKET_TICKERS: frozenset[str] = frozenset({"SPY", "QQQ"})
+
+# Event types we treat as "company-specific" — only these are allowed to have
+# kind=COMPANY impacts. Everything else (macro releases) emits MARKET-only.
+_COMPANY_EVENT_TYPES: frozenset[str] = frozenset({"8K_FILING", "EARNINGS_REPORT"})
 
 logger = structlog.get_logger(__name__)
 
@@ -47,10 +57,22 @@ async def _process_one(db: AsyncSession, event: Event, spend_today: float) -> in
     The caller owns the transaction; this function does NOT commit. The caller
     commits after this returns (success or failure path).
     """
+    settings = get_settings()
     log = logger.bind(event_id=str(event.id), source=event.source.value)
     choice = choose_model(event.source, event.event_type, spend_today)
-    watchlist = get_settings().watchlist
-    prompt = clients.build_prompt(event.payload, watchlist)
+    watchlist = settings.watchlist
+
+    if settings.analyzer_prompt_version == "v2":
+        ctx = await context_builder.build_context(
+            db,
+            event,
+            lookback_days=settings.analyzer_lookback_days,
+            recent_events_cap=settings.analyzer_recent_events_cap,
+            watchlist=watchlist,
+        )
+        prompt = clients.build_prompt_v2(ctx)
+    else:
+        prompt = clients.build_prompt_v1(event.payload, watchlist)
 
     try:
         result = await clients.analyze_event(choice, prompt)
@@ -71,6 +93,9 @@ async def _process_one(db: AsyncSession, event: Event, spend_today: float) -> in
         predictions=len(predictions),
         model=choice.model,
         cost_usd=round(cost, 6),
+        prompt_tokens=result.prompt_tokens,
+        completion_tokens=result.completion_tokens,
+        prompt_version=settings.analyzer_prompt_version,
     )
     return len(predictions)
 
@@ -85,23 +110,47 @@ def _build_predictions(
 
     Cost is attributed only to the first prediction — sum-by-day still gives the
     right total, and per-prediction division would create misleading fractions.
+
+    Validation rules (kind-aware, post-v2):
+      - kind=MARKET ⇒ ticker MUST be SPY or QQQ; other tickers are dropped as
+        LLM hallucination.
+      - kind=COMPANY ⇒ ticker MUST be in event.affected_tickers AND in the
+        watchlist; macro-event COMPANY impacts are also dropped (LLM should
+        only emit COMPANY for 8-K / earnings).
     """
+    watchlist = set(get_settings().watchlist)
+    affected = set(event.affected_tickers or [])
+    is_company_event = event.event_type in _COMPANY_EVENT_TYPES
+
     now = datetime.now(UTC)
     rows: list[Prediction] = []
     for i, impact in enumerate(analysis.impacts):
-        # Skip tickers the LLM hallucinated outside the watchlist. instructor's
-        # validation only constrains string shape, not values.
-        if impact.ticker not in get_settings().watchlist:
-            logger.warning(
-                "analyzer.hallucinated_ticker",
-                event_id=str(event.id),
-                ticker=impact.ticker,
-            )
-            continue
+        kind = PredictionKind(impact.kind)
+        log = logger.bind(event_id=str(event.id), ticker=impact.ticker, kind=kind.value)
+
+        if kind == PredictionKind.MARKET:
+            if impact.ticker not in _MARKET_TICKERS:
+                log.warning("analyzer.market_impact_bad_ticker")
+                continue
+        else:  # COMPANY
+            if not is_company_event:
+                log.warning("analyzer.company_impact_on_macro_event")
+                continue
+            if impact.ticker not in watchlist:
+                log.warning("analyzer.hallucinated_ticker")
+                continue
+            if affected and impact.ticker not in affected:
+                # The LLM picked a watchlist ticker that isn't the event's own
+                # company — possible for spillover ("AAPL guidance hits TSM"),
+                # but the v2 prompt explicitly forbids it. Drop.
+                log.warning("analyzer.company_impact_off_target")
+                continue
+
         rows.append(
             Prediction(
                 event_id=event.id,
                 ticker=impact.ticker,
+                kind=kind,
                 direction=impact.direction,
                 magnitude=impact.magnitude,
                 confidence=impact.confidence,

@@ -17,11 +17,22 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class TickerImpact(BaseModel):
-    """One ticker's predicted reaction to an event."""
+    """One ticker's predicted reaction to an event.
+
+    `kind` distinguishes broad-market calls (SPY/QQQ) from per-company calls.
+    v1 prompt clients never set this — the v1 LLM only emitted per-company
+    impacts; the analyzer defaults their `kind` to COMPANY when persisting.
+    v2 prompt clients must always set it; the analyzer validates ticker
+    correctness against the kind (MARKET ⇒ {SPY, QQQ}; COMPANY ⇒ event's
+    affected ticker).
+    """
 
     model_config = ConfigDict(frozen=True)
 
     ticker: str = Field(min_length=1, max_length=10)
+    # Default COMPANY for v1 prompt back-compat; v2 prompt instructs the LLM
+    # to set it explicitly.
+    kind: Literal["MARKET", "COMPANY"] = "COMPANY"
     direction: Literal["BULLISH", "BEARISH", "NEUTRAL"]
     magnitude: Literal["LOW", "MEDIUM", "HIGH"]
     # Confidence about direction, not magnitude. 0.5 = coin flip.

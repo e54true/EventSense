@@ -36,8 +36,15 @@ class ModelChoice:
 _HIGH_STAKES_EVENT_TYPES: frozenset[tuple[EventSource, str]] = frozenset(
     {
         (EventSource.FOMC, "FOMC_STATEMENT"),
-        # CPI is the biggest scheduled macro print of each month; LLM nuance
-        # on dovish/hawkish language is worth the premium model price.
+        (EventSource.FOMC, "DOT_PLOT_RELEASE"),  # SEP — quarterly forward guidance signal
+        # Macro prints that move the whole curve and SPY. LLM nuance on the
+        # dovish/hawkish lean of each release is worth the premium model price.
+        (EventSource.FRED, "CPI_RELEASE"),
+        (EventSource.FRED, "NFP_RELEASE"),
+        (EventSource.FRED, "GDP_RELEASE"),
+        # Back-compat: legacy rows from before the multi-series rename. The
+        # Phase 1 migration backfills them to CPI_RELEASE but keep the alias
+        # in case of a rolling deploy ordering quirk.
         (EventSource.FRED, "ECONOMIC_RELEASE"),
     }
 )

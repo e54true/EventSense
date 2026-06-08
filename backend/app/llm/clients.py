@@ -112,9 +112,9 @@ def reset_clients_for_test() -> None:
     _anthropic_client = None
 
 
-def build_prompt(event_payload: dict[str, Any], watchlist: list[str]) -> str:
-    """Render the v1 prompt template with this event's data + watchlist."""
-    import json as _json  # local import to keep top imports clean
+def build_prompt_v1(event_payload: dict[str, Any], watchlist: list[str]) -> str:
+    """Render the v1 prompt — single event payload + watchlist. No macro context."""
+    import json as _json
     from pathlib import Path
 
     template_path = Path(__file__).parent.parent / "prompts" / "event_analysis_v1.txt"
@@ -125,4 +125,60 @@ def build_prompt(event_payload: dict[str, Any], watchlist: list[str]) -> str:
     )
 
 
-PROMPT_VERSION = "v1"
+# Back-compat alias — existing call sites in tests / older code use `build_prompt`.
+build_prompt = build_prompt_v1
+
+
+def build_prompt_v2(ctx: "AnalyzerContext") -> str:  # noqa: F821 — forward ref
+    """Render the v2 prompt — triggering event + macro indicators + recent events.
+
+    `ctx` is `app.services.context_builder.AnalyzerContext`; the import is
+    deferred to avoid a circular import (context_builder reads ORM models that
+    indirectly route back through services).
+    """
+    import json as _json
+    from pathlib import Path
+
+    template_path = Path(__file__).parent.parent / "prompts" / "event_analysis_v2.txt"
+    template = template_path.read_text(encoding="utf-8")
+    return template.format(
+        lookback_days=ctx.lookback_days,
+        event_json=_json.dumps(ctx.triggering_event.payload, indent=2, default=str),
+        indicators_table=_render_indicators_table(ctx.latest_indicators),
+        recent_events_table=_render_recent_events_table(ctx.recent_events),
+        watchlist_csv=", ".join(ctx.watchlist),
+    )
+
+
+def _render_indicators_table(snapshots: dict[str, Any]) -> str:
+    """Compact one-line-per-indicator table: KEY | value | (Δ30d sign value)."""
+    if not snapshots:
+        return "(no indicators available)"
+    lines = ["KEY | VALUE | 30-DAY CHANGE"]
+    for key in sorted(snapshots):
+        s = snapshots[key]
+        if s.delta_30d is None:
+            delta = "n/a"
+        else:
+            sign = "+" if s.delta_30d >= 0 else ""
+            delta = f"{sign}{s.delta_30d:.3f}"
+        lines.append(f"{key} | {s.value:.4f} | {delta}")
+    return "\n".join(lines)
+
+
+def _render_recent_events_table(events: list[Any]) -> str:
+    """Compact one-line-per-event table: timestamp | source | event_type | title."""
+    if not events:
+        return "(no recent events in window)"
+    lines = ["WHEN | SOURCE | TYPE | TITLE"]
+    for e in events:
+        lines.append(
+            f"{e.published_at.date().isoformat()} | {e.source} | {e.event_type} | {e.title}"
+        )
+    return "\n".join(lines)
+
+
+# The analyzer reads settings.analyzer_prompt_version to pick the template;
+# this constant goes into the predictions.prompt_version column so we can A/B
+# v1 vs v2 historical predictions in the accuracy endpoint.
+PROMPT_VERSION = "v2"
