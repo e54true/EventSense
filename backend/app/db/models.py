@@ -17,6 +17,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    func,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -48,6 +49,18 @@ class PredictionMagnitude(StrEnum):
     LOW = "LOW"
     MEDIUM = "MEDIUM"
     HIGH = "HIGH"
+
+
+class PredictionKind(StrEnum):
+    """Which side of the prediction this row represents.
+
+    MARKET — broad-index call (SPY / QQQ). Always emitted by the v2 analyzer.
+    COMPANY — single-ticker call tied to the triggering event's affected company.
+              Only emitted when the event is company-specific (8-K, earnings).
+    """
+
+    MARKET = "MARKET"
+    COMPANY = "COMPANY"
 
 
 class OutcomeWindow(StrEnum):
@@ -120,6 +133,7 @@ class Prediction(Base, TimestampMixin):
     __table_args__ = (
         Index("ix_predictions_event", "event_id"),
         Index("ix_predictions_ticker_time", "ticker", "predicted_at"),
+        Index("ix_predictions_kind_time", "kind", "predicted_at"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -133,6 +147,14 @@ class Prediction(Base, TimestampMixin):
         nullable=False,
     )
     ticker: Mapped[str] = mapped_column(String(10), nullable=False)
+    # Default COMPANY keeps v1 analyzer code (which doesn't set kind explicitly)
+    # working unchanged. v2 analyzer always sets this explicitly to MARKET or
+    # COMPANY per the LLM's response. The DB column itself is NOT NULL.
+    kind: Mapped[PredictionKind] = mapped_column(
+        Enum(PredictionKind, name="prediction_kind"),
+        nullable=False,
+        default=PredictionKind.COMPANY,
+    )
     direction: Mapped[PredictionDirection] = mapped_column(
         Enum(PredictionDirection, name="prediction_direction"),
         nullable=False,
@@ -233,3 +255,46 @@ class PriceSnapshot(Base):
     # Decimal (not float) — float would silently lose cents at large values.
     price: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
     source: Mapped[str] = mapped_column(String(20), nullable=False, default="yfinance")
+
+
+class Indicator(Base):
+    """One observation of a time-series macro/market indicator.
+
+    Unlike `events`, indicators have no analyzer trigger semantics — they're
+    *state* sampled on a cadence (daily for yields, daily for P/E). The v2
+    analyzer reads the freshest value per `indicator_key` as context when
+    analyzing any triggering event.
+
+    Append-only, mirrors `price_snapshots` table choices (bigint PK, no
+    TimestampMixin — `observed_at` is authoritative; `created_at` retained as
+    a write-time forensic).
+    """
+
+    __tablename__ = "indicators"
+    __table_args__ = (
+        UniqueConstraint("indicator_key", "observed_at", name="uq_indicators_key_observed"),
+        Index(
+            "ix_indicators_key_observed_desc",
+            "indicator_key",
+            "observed_at",
+            postgresql_using="btree",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    # String (not enum) so adding a new key doesn't require a migration. New
+    # indicators are far more common than new event types.
+    indicator_key: Mapped[str] = mapped_column(String(40), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Numeric(18, 6) covers yield % (4.275000), P/E (22.350000), and dollar-EPS
+    # values ($245.500000) with consistent precision across all indicators.
+    value: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
+    source: Mapped[str] = mapped_column(String(20), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default="{}", default=dict
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )

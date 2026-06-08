@@ -16,6 +16,7 @@ from app.db.models import (
     EventSource,
     OutcomeWindow,
     Prediction,
+    PredictionKind,
     PredictionOutcome,
 )
 from app.db.session import get_db
@@ -38,6 +39,7 @@ async def get_accuracy(
     ticker: str | None = Query(None, description="Filter by prediction ticker (case-insensitive)"),
     window: OutcomeWindow | None = Query(None, description="Filter by outcome window"),
     model: str | None = Query(None, description="Filter by LLM model name"),
+    kind: PredictionKind | None = Query(None, description="Filter by MARKET vs COMPANY"),
     db: AsyncSession = Depends(get_db),
 ) -> AccuracyResponse:
     """Compute aligned/total over the filtered set in one round trip.
@@ -66,6 +68,8 @@ async def get_accuracy(
         stmt = stmt.where(PredictionOutcome.window == window)
     if model is not None:
         stmt = stmt.where(Prediction.llm_model == model)
+    if kind is not None:
+        stmt = stmt.where(Prediction.kind == kind)
 
     row = (await db.execute(stmt)).one()
     total = int(row.total or 0)
@@ -81,5 +85,6 @@ async def get_accuracy(
             "ticker": ticker.upper() if ticker else None,
             "window": window.value if window else None,
             "model": model,
+            "kind": kind.value if kind else None,
         },
     )

@@ -11,6 +11,7 @@ export type EventStatus = "FETCHED" | "ANALYZED" | "FAILED" | "IGNORED";
 
 export type PredictionDirection = "BULLISH" | "BEARISH" | "NEUTRAL";
 export type PredictionMagnitude = "LOW" | "MEDIUM" | "HIGH";
+export type PredictionKind = "MARKET" | "COMPANY";
 
 export type OutcomeWindow = "1h" | "24h" | "7d";
 
@@ -34,6 +35,7 @@ export interface PredictionRead {
   id: string;
   event_id: string;
   ticker: string;
+  kind: PredictionKind;
   direction: PredictionDirection;
   magnitude: PredictionMagnitude;
   confidence: number;
@@ -100,5 +102,6 @@ export interface AccuracyResponse {
     ticker: string | null;
     window: OutcomeWindow | null;
     model: string | null;
+    kind: PredictionKind | null;
   };
 }

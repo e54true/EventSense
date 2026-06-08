@@ -3,7 +3,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
-from app.db.models import PredictionDirection, PredictionMagnitude
+from app.db.models import PredictionDirection, PredictionKind, PredictionMagnitude
 from app.schemas.outcome import OutcomeRead
 
 
@@ -15,6 +15,7 @@ class PredictionRead(BaseModel):
     id: uuid.UUID
     event_id: uuid.UUID
     ticker: str
+    kind: PredictionKind
     direction: PredictionDirection
     magnitude: PredictionMagnitude
     confidence: float
