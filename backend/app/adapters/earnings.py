@@ -8,11 +8,16 @@ For "upcoming earnings" (calendar) — that's metadata, not an event. We don't
 emit RawEvents until the earnings have actually been reported, because the
 event_type=EARNINGS_REPORT only makes sense once results are out.
 
+Each row's payload is also enriched with `fundamentals` from
+yfinance.quarterly_income_stmt (Phase A): Revenue, Gross Profit, Operating
+Income, Net Income, EBITDA, R&D, plus Y/Y growth % for each. This gives the
+v2 analyzer a vastly richer per-event context than just the EPS headline.
+
 Like the prices adapter, yfinance instability means every call is wrapped in
 broad except.
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import structlog
@@ -29,6 +34,24 @@ logger = structlog.get_logger(__name__)
 # regardless of which week of the quarter we poll (vs. 30 days which would
 # miss companies whose latest earnings landed > 1 month ago).
 LOOKBACK_DAYS = 120
+
+# yfinance row label → our payload key. Anything missing in a given quarter
+# becomes None — graceful degrade rather than dropping the whole fundamentals
+# block.
+_INCOME_STMT_METRICS: dict[str, str] = {
+    "Total Revenue": "revenue",
+    "Gross Profit": "gross_profit",
+    "Cost Of Revenue": "cost_of_revenue",
+    "Operating Income": "operating_income",
+    "Net Income": "net_income",
+    "EBITDA": "ebitda",
+    "Research And Development": "rd_expense",
+    "Diluted EPS": "diluted_eps",
+}
+
+# Tolerance for matching "same quarter previous year" — fiscal calendars
+# wobble a few days quarter to quarter (e.g. AAPL's 13-week quarters).
+_YOY_DATE_TOLERANCE_DAYS = 10
 
 
 def _earnings_history_rows(ticker: str) -> list[dict[str, Any]]:
@@ -83,7 +106,99 @@ def _safe_float(v: Any) -> float | None:
     return f
 
 
-def _row_to_raw_event(ticker: str, row: dict[str, Any]) -> RawEvent | None:
+def _fetch_income_stmt_by_quarter(ticker: str) -> dict[date, dict[str, float | None]] | None:
+    """Pull yfinance quarterly_income_stmt, return {quarter_end_date: {metric: value}}.
+
+    None when yfinance errors out or returns empty. Each metric maps to
+    float | None; an entirely missing row stores None for that metric, the
+    rest of the quarter survives.
+    """
+    try:
+        df = yf.Ticker(ticker).quarterly_income_stmt
+    except Exception as exc:
+        logger.warning("earnings.income_stmt.failed", ticker=ticker, error=str(exc))
+        return None
+
+    if df is None or df.empty:
+        return None
+
+    by_quarter: dict[date, dict[str, float | None]] = {}
+    for col in df.columns:
+        try:
+            quarter_end = col.date()
+        except Exception:  # noqa: S112 — malformed column index, skip silently
+            continue
+        q_data: dict[str, float | None] = {}
+        for yf_label, payload_key in _INCOME_STMT_METRICS.items():
+            try:
+                v = df.loc[yf_label, col]
+            except (KeyError, IndexError):
+                v = None
+            q_data[payload_key] = _safe_float(v)
+        by_quarter[quarter_end] = q_data
+    return by_quarter
+
+
+def _yoy_growth_pct(
+    by_quarter: dict[date, dict[str, float | None]], target_quarter: date
+) -> dict[str, float | None]:
+    """For each metric in the target quarter, compute Y/Y % change vs same
+    quarter previous year (within ±10 days). Returns {metric}_yoy_pct keys.
+
+    Empty dict when target quarter isn't in the data, or when no prior-year
+    quarter exists within tolerance.
+    """
+    target = by_quarter.get(target_quarter)
+    if target is None:
+        return {}
+
+    try:
+        prior_target = target_quarter.replace(year=target_quarter.year - 1)
+    except ValueError:
+        # Feb 29 — should never happen for fiscal quarter-ends but be defensive.
+        return {}
+
+    prior: dict[str, float | None] | None = None
+    for q_date, q_data in by_quarter.items():
+        if abs((q_date - prior_target).days) <= _YOY_DATE_TOLERANCE_DAYS:
+            prior = q_data
+            break
+    if prior is None:
+        return {}
+
+    yoy: dict[str, float | None] = {}
+    for metric_key, latest_v in target.items():
+        prior_v = prior.get(metric_key)
+        if latest_v is None or prior_v is None or prior_v == 0:
+            yoy[f"{metric_key}_yoy_pct"] = None
+        else:
+            yoy[f"{metric_key}_yoy_pct"] = round(
+                (latest_v - prior_v) / abs(prior_v) * 100, 2
+            )
+    return yoy
+
+
+def _build_fundamentals(
+    by_quarter: dict[date, dict[str, float | None]] | None, report_date: date
+) -> dict[str, Any] | None:
+    """Assemble the payload['fundamentals'] block for one earnings report.
+
+    Returns None when no income_stmt data is available for this quarter —
+    payload simply omits the fundamentals key in that case (graceful degrade).
+    """
+    if by_quarter is None:
+        return None
+    quarter_data = by_quarter.get(report_date)
+    if quarter_data is None:
+        return None
+    return {**quarter_data, **_yoy_growth_pct(by_quarter, report_date)}
+
+
+def _row_to_raw_event(
+    ticker: str,
+    row: dict[str, Any],
+    fundamentals: dict[str, Any] | None = None,
+) -> RawEvent | None:
     eps_actual = row["eps_actual"]
     if eps_actual is None:
         # Skip "future" rows in earnings_history that haven't reported yet.
@@ -101,25 +216,35 @@ def _row_to_raw_event(ticker: str, row: dict[str, Any]) -> RawEvent | None:
         title_parts.append(f"surprise={surprise:.1f}%")
     title = " ".join(title_parts)[:500]
 
+    payload: dict[str, Any] = {
+        "ticker": ticker,
+        "report_date": report_date.date().isoformat(),
+        "eps_actual": eps_actual,
+        "eps_estimate": eps_est,
+        "surprise_percent": surprise,
+    }
+    if fundamentals is not None:
+        payload["fundamentals"] = fundamentals
+
     return RawEvent(
         source=EventSource.EARNINGS,
         event_type="EARNINGS_REPORT",
         external_id=external_id,
         title=title,
-        payload={
-            "ticker": ticker,
-            "report_date": report_date.date().isoformat(),
-            "eps_actual": eps_actual,
-            "eps_estimate": eps_est,
-            "surprise_percent": surprise,
-        },
+        payload=payload,
         affected_tickers=[ticker],
         published_at=report_date,
     )
 
 
 async def fetch_new() -> list[RawEvent]:
-    """Poll watchlist tickers and emit recent earnings reports as RawEvents."""
+    """Poll watchlist tickers and emit recent earnings reports as RawEvents.
+
+    For each ticker we make TWO yfinance calls: earnings_history (EPS surprise)
+    + quarterly_income_stmt (Revenue / NI / margin breakdown + Y/Y growth).
+    Either call failing on a ticker yields a degraded event (no fundamentals)
+    rather than dropping the event entirely.
+    """
     tickers = get_settings().watchlist
     cutoff = datetime.now(UTC) - timedelta(days=LOOKBACK_DAYS)
 
@@ -132,10 +257,15 @@ async def fetch_new() -> list[RawEvent]:
         if ticker in {"SPY", "QQQ"}:
             continue
         rows = _earnings_history_rows(ticker)
+        if not rows:
+            continue
+        # One income_stmt fetch per ticker, reused across all that ticker's rows.
+        income_by_quarter = _fetch_income_stmt_by_quarter(ticker)
         for row in rows:
             if row["report_date"] < cutoff:
                 continue
-            event = _row_to_raw_event(ticker, row)
+            fundamentals = _build_fundamentals(income_by_quarter, row["report_date"].date())
+            event = _row_to_raw_event(ticker, row, fundamentals)
             if event is not None:
                 events.append(event)
 

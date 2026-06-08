@@ -4,16 +4,19 @@ We don't hit yfinance for real (it's flaky and gives different data each run);
 we mock the DataFrame shape it returns.
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import patch
 
 import pandas as pd
 import pytest
 
 from app.adapters.earnings import (
+    _build_fundamentals,
     _earnings_history_rows,
+    _fetch_income_stmt_by_quarter,
     _row_to_raw_event,
     _safe_float,
+    _yoy_growth_pct,
     fetch_new,
 )
 from app.db.models import EventSource
@@ -121,3 +124,125 @@ async def test_fetch_new_returns_empty_on_yfinance_exception() -> None:
         mock_ticker.side_effect = _explode
         events = await fetch_new()
     assert events == []
+
+
+# ---- Phase A: fundamentals from quarterly_income_stmt ----
+
+
+def _income_stmt_df() -> pd.DataFrame:
+    """5-quarter DataFrame mirroring yfinance.quarterly_income_stmt shape.
+
+    Columns newest-first; rows are the standard income statement labels we
+    extract. Values are realistic NVDA-scale numbers for testing Y/Y math.
+    """
+    quarters = pd.to_datetime(
+        ["2026-04-30", "2026-01-31", "2025-10-31", "2025-07-31", "2025-04-30"]
+    )
+    rows = {
+        "Total Revenue": [81.6e9, 60.0e9, 50.0e9, 45.0e9, 44.0e9],
+        "Gross Profit": [61.2e9, 45.0e9, 37.0e9, 33.0e9, 26.7e9],
+        "Cost Of Revenue": [20.5e9, 15.0e9, 13.0e9, 12.0e9, 17.4e9],
+        "Operating Income": [53.5e9, 40.0e9, 32.0e9, 28.0e9, 21.6e9],
+        "Net Income": [58.3e9, 43.0e9, 35.0e9, 30.0e9, 18.8e9],
+        "EBITDA": [71.0e9, 53.0e9, 43.0e9, 38.0e9, 22.6e9],
+        "Research And Development": [6.32e9, 5.5e9, 4.8e9, 4.2e9, 3.99e9],
+        "Diluted EPS": [2.39, 1.78, 1.45, 1.24, 0.76],
+    }
+    return pd.DataFrame(rows, index=quarters).T
+
+
+def test_fetch_income_stmt_by_quarter_parses_5_quarters() -> None:
+    fake_ticker = type("T", (), {"quarterly_income_stmt": _income_stmt_df()})()
+    with patch("app.adapters.earnings.yf.Ticker", return_value=fake_ticker):
+        result = _fetch_income_stmt_by_quarter("NVDA")
+    assert result is not None
+    assert date(2026, 4, 30) in result
+    latest = result[date(2026, 4, 30)]
+    assert latest["revenue"] == pytest.approx(81.6e9)
+    assert latest["net_income"] == pytest.approx(58.3e9)
+    assert latest["diluted_eps"] == pytest.approx(2.39)
+
+
+def test_fetch_income_stmt_returns_none_on_yfinance_exception() -> None:
+    def _explode(_ticker: str) -> pd.DataFrame:
+        raise RuntimeError("yfinance died")
+
+    with patch("app.adapters.earnings.yf.Ticker", side_effect=_explode):
+        assert _fetch_income_stmt_by_quarter("NVDA") is None
+
+
+def test_fetch_income_stmt_returns_none_on_empty_df() -> None:
+    fake_ticker = type("T", (), {"quarterly_income_stmt": pd.DataFrame()})()
+    with patch("app.adapters.earnings.yf.Ticker", return_value=fake_ticker):
+        assert _fetch_income_stmt_by_quarter("NVDA") is None
+
+
+def test_yoy_growth_uses_same_quarter_previous_year() -> None:
+    fake_ticker = type("T", (), {"quarterly_income_stmt": _income_stmt_df()})()
+    with patch("app.adapters.earnings.yf.Ticker", return_value=fake_ticker):
+        by_q = _fetch_income_stmt_by_quarter("NVDA")
+    assert by_q is not None
+    yoy = _yoy_growth_pct(by_q, date(2026, 4, 30))
+    # Revenue: 81.6 vs 44.0 = +85.45%
+    assert yoy["revenue_yoy_pct"] == pytest.approx(85.45, abs=0.1)
+    # Net income: 58.3 vs 18.8 = +210.11%
+    assert yoy["net_income_yoy_pct"] == pytest.approx(210.11, abs=0.1)
+
+
+def test_yoy_returns_empty_when_no_prior_year_match() -> None:
+    """A quarter with no ~365-day-prior column → empty Y/Y dict (graceful)."""
+    fake_ticker = type("T", (), {"quarterly_income_stmt": _income_stmt_df()})()
+    with patch("app.adapters.earnings.yf.Ticker", return_value=fake_ticker):
+        by_q = _fetch_income_stmt_by_quarter("NVDA")
+    assert by_q is not None
+    # 2025-07-31 has no 2024-07-31 counterpart in our fixture
+    yoy = _yoy_growth_pct(by_q, date(2025, 7, 31))
+    assert yoy == {}
+
+
+def test_build_fundamentals_combines_quarter_with_yoy() -> None:
+    by_q = {
+        date(2026, 4, 30): {"revenue": 100.0, "net_income": 50.0},
+        date(2025, 4, 30): {"revenue": 80.0, "net_income": 25.0},
+    }
+    f = _build_fundamentals(by_q, date(2026, 4, 30))
+    assert f is not None
+    assert f["revenue"] == 100.0
+    assert f["revenue_yoy_pct"] == pytest.approx(25.0)
+    assert f["net_income_yoy_pct"] == pytest.approx(100.0)
+
+
+def test_build_fundamentals_returns_none_when_quarter_missing() -> None:
+    by_q = {date(2025, 4, 30): {"revenue": 80.0}}
+    assert _build_fundamentals(by_q, date(2026, 4, 30)) is None
+
+
+def test_build_fundamentals_returns_none_when_income_stmt_unavailable() -> None:
+    assert _build_fundamentals(None, date(2026, 4, 30)) is None
+
+
+def test_row_to_raw_event_includes_fundamentals_when_provided() -> None:
+    row = {
+        "report_date": datetime(2026, 4, 30, tzinfo=UTC),
+        "eps_actual": 1.87,
+        "eps_estimate": 1.77,
+        "surprise_pct": 5.5,
+    }
+    fundamentals = {"revenue": 81.6e9, "revenue_yoy_pct": 85.0}
+    event = _row_to_raw_event("NVDA", row, fundamentals)
+    assert event is not None
+    assert event.payload["fundamentals"] == fundamentals
+
+
+def test_row_to_raw_event_omits_fundamentals_key_when_none() -> None:
+    """No fundamentals available → payload doesn't include the key at all
+    (LLM prompt then doesn't pretend they exist as null)."""
+    row = {
+        "report_date": datetime(2026, 4, 30, tzinfo=UTC),
+        "eps_actual": 1.87,
+        "eps_estimate": 1.77,
+        "surprise_pct": 5.5,
+    }
+    event = _row_to_raw_event("NVDA", row, None)
+    assert event is not None
+    assert "fundamentals" not in event.payload
