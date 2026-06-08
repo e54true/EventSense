@@ -24,6 +24,9 @@ dependencies = [
     # Safe XML parsing for FOMC RSS feed (Milestone 3+) — guards against
     # XXE / billion-laughs attacks that stdlib xml.etree is vulnerable to.
     "defusedxml>=0.7.1",
+    # HTML scraping for multpl.com (S&P 500 P/E + TTM EPS) and the Fed's FOMC
+    # projections (dot plot) pages.
+    "beautifulsoup4>=4.12.0",
     # Stock prices + earnings (Milestone 4+). Unofficial Yahoo Finance scraper —
     # API can change anytime, so wrap every call in broad except blocks.
     "yfinance>=0.2.50",

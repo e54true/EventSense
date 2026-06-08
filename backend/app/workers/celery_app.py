@@ -92,6 +92,20 @@ celery_app.conf.beat_schedule = {
         # close); FRED republishes ~21:00 UTC. 22:15 UTC catches the fresh value.
         "schedule": crontab(hour=22, minute=15),
     },
+    "market-indicators-daily": {
+        "task": "app.tasks.indicators.fetch_market_indicators_task",
+        # multpl.com updates after US market close (~20:00 UTC); 22:30 UTC is
+        # comfortable. observed_at is truncated to the day in the adapter so
+        # intra-day re-polls dedupe.
+        "schedule": crontab(hour=22, minute=30),
+    },
+    "dot-plot-weekly": {
+        "task": "app.tasks.fetchers.fetch_dot_plot_task",
+        # SEP releases ~4x/year on FOMC Wednesdays. Weekly poll on Wed 18:45 UTC
+        # (post-2:30 PM ET press conference). The (source, external_id) dedup
+        # constraint means most weekly polls are free no-ops.
+        "schedule": crontab(day_of_week="wed", hour=18, minute=45),
+    },
     "sec-edgar-15min": {
         "task": "app.tasks.fetchers.fetch_sec_edgar_task",
         # Every 15 minutes per spec §7.2. We poll many tickers per run, but each call

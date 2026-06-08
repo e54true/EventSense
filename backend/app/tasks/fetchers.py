@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 import structlog
 
-from app.adapters import earnings, fomc, fred, sec_edgar
+from app.adapters import dot_plot, earnings, fomc, fred, sec_edgar
 from app.db.session import transient_session
 from app.schemas.raw_event import RawEvent
 from app.services.event_writer import persist_events
@@ -73,3 +73,10 @@ def fetch_fomc_task() -> dict[str, int]:
 @celery_app.task(name="app.tasks.fetchers.fetch_earnings_task")
 def fetch_earnings_task() -> dict[str, int]:
     return _run_fetch("earnings", earnings.fetch_new)
+
+
+# Dot plot adapter wraps every HTTP call in broad except (Fed HTML is fragile),
+# so autoretry isn't useful — the task succeeds with 0 events on transient failure.
+@celery_app.task(name="app.tasks.fetchers.fetch_dot_plot_task")
+def fetch_dot_plot_task() -> dict[str, int]:
+    return _run_fetch("dot_plot", dot_plot.fetch_new)

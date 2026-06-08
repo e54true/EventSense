@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 import structlog
 
-from app.adapters import indicators_fred
+from app.adapters import indicators_fred, indicators_market
 from app.db.session import transient_session
 from app.schemas.indicator import IndicatorObservation
 from app.services.indicator_writer import persist_indicators
@@ -50,3 +50,11 @@ _common_task_kwargs = dict(
 @celery_app.task(name="app.tasks.indicators.fetch_fred_indicators_task", **_common_task_kwargs)
 def fetch_fred_indicators_task() -> dict[str, int]:
     return _run_fetch("fred", indicators_fred.fetch_new)
+
+
+# multpl.com scraping doesn't go through httpx-retryable errors the way FRED
+# does; the adapter wraps every fetch in broad except so a failed pull just
+# yields no observation rather than crashing the task.
+@celery_app.task(name="app.tasks.indicators.fetch_market_indicators_task")
+def fetch_market_indicators_task() -> dict[str, int]:
+    return _run_fetch("market", indicators_market.fetch_new)
