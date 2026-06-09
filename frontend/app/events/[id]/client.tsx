@@ -113,6 +113,8 @@ export function EventDetailClient({ id }: { id: string }) {
             {event.failure_reason}
           </div>
         )}
+
+        <SourceLinks payload={event.payload} />
       </header>
 
       {predictions.length > 0 && (
@@ -243,6 +245,64 @@ function PredictionGroup({
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+// External links pulled out of the event's source payload. Different event
+// types use different field names — we render whichever ones are present so
+// adding a new source-link key backend-side doesn't require a frontend change
+// (e.g. a future TRANSCRIPT_URL would just need to be added to this map).
+type LinkSpec = { key: string; label: string; nested?: string };
+const SOURCE_LINK_SPECS: LinkSpec[] = [
+  // Earnings: SEC 8-K item 2.02 press release matched at ingest time
+  { key: "sec_filing", label: "SEC 8-K (press release)", nested: "primary_doc_url" },
+  // Earnings: Yahoo Finance quote page
+  { key: "yahoo_finance_url", label: "Yahoo Finance" },
+  // SEC 8-K events: cover document
+  { key: "primary_doc_url", label: "SEC filing" },
+  // FOMC statement: Fed press release URL
+  { key: "link", label: "Federal Reserve press release" },
+  // Dot plot: SEP projections page
+  { key: "url", label: "SEP projections page" },
+];
+
+function getLink(payload: Record<string, unknown>, spec: LinkSpec): string | null {
+  const value = payload[spec.key];
+  if (value === undefined || value === null) return null;
+  if (spec.nested) {
+    if (typeof value !== "object") return null;
+    const inner = (value as Record<string, unknown>)[spec.nested];
+    return typeof inner === "string" ? inner : null;
+  }
+  return typeof value === "string" ? value : null;
+}
+
+function SourceLinks({ payload }: { payload: Record<string, unknown> }) {
+  const links = SOURCE_LINK_SPECS.map((spec) => {
+    const url = getLink(payload, spec);
+    return url ? { ...spec, url } : null;
+  }).filter((l): l is LinkSpec & { url: string } => l !== null);
+
+  if (links.length === 0) return null;
+
+  return (
+    <div className="mt-4 flex flex-wrap items-center gap-2">
+      <span className="text-[11px] uppercase tracking-wider text-slate-500">
+        Source links
+      </span>
+      {links.map((l) => (
+        <a
+          key={l.key}
+          href={l.url}
+          target="_blank"
+          rel="noreferrer noopener"
+          className="inline-flex items-center gap-1 rounded-md bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700 ring-1 ring-inset ring-indigo-600/20 hover:bg-indigo-100 transition-colors"
+        >
+          {l.label}
+          <span aria-hidden className="text-indigo-500">↗</span>
+        </a>
+      ))}
     </div>
   );
 }

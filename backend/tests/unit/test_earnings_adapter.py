@@ -5,6 +5,7 @@ we mock the DataFrame shape it returns.
 """
 
 from datetime import UTC, date, datetime, timedelta
+from typing import Any
 from unittest.mock import patch
 
 import pandas as pd
@@ -246,3 +247,105 @@ def test_row_to_raw_event_omits_fundamentals_key_when_none() -> None:
     event = _row_to_raw_event("NVDA", row, None)
     assert event is not None
     assert "fundamentals" not in event.payload
+
+
+# ---- SEC lookup for matching 8-K item 2.02 press release ----
+
+_SEC_SUBMISSIONS_FIXTURE = {
+    "name": "NVIDIA Corp",
+    "filings": {
+        "recent": {
+            "form": ["8-K", "10-Q", "8-K", "8-K"],
+            "items": ["2.02,9.01", "", "5.02", "8.01"],
+            "filingDate": ["2026-05-20", "2026-05-25", "2026-04-15", "2026-06-10"],
+            "accessionNumber": [
+                "0001045810-26-000051",
+                "0001045810-26-000052",
+                "0001045810-26-000049",
+                "0001045810-26-000055",
+            ],
+            "primaryDocument": [
+                "nvda-20260520.htm",
+                "nvda-10q.htm",
+                "nvda-officer.htm",
+                "nvda-other.htm",
+            ],
+        }
+    },
+}
+
+
+async def test_lookup_sec_8k_picks_first_item_2_02_within_60_days() -> None:
+    from app.adapters.earnings import _lookup_sec_8k_filing
+
+    fake_response = type(
+        "R",
+        (),
+        {
+            "raise_for_status": lambda self: None,
+            "json": lambda self: _SEC_SUBMISSIONS_FIXTURE,
+        },
+    )()
+
+    class FakeClient:
+        async def get(self, _url: str) -> Any:
+            return fake_response
+
+    result = await _lookup_sec_8k_filing(FakeClient(), "NVDA", date(2026, 4, 30))
+    assert result is not None
+    assert result["accession_number"] == "0001045810-26-000051"
+    assert "nvda-20260520.htm" in result["primary_doc_url"]
+    assert result["filing_date"] == "2026-05-20"
+
+
+async def test_lookup_sec_8k_returns_none_for_unmapped_ticker() -> None:
+    from app.adapters.earnings import _lookup_sec_8k_filing
+
+    class FakeClient:
+        async def get(self, _url: str) -> Any:
+            raise AssertionError("should not be called for unmapped ticker")
+
+    # XYZ isn't in cik_map → skip without HTTP call
+    result = await _lookup_sec_8k_filing(FakeClient(), "XYZ", date(2026, 4, 30))
+    assert result is None
+
+
+async def test_lookup_sec_8k_returns_none_when_no_filing_in_window() -> None:
+    """8-K item 5.02 (officer change) is in the fixture but item 2.02 only
+    matches the May 20 filing. For report_date = 2026-01-01, May 20 is outside
+    the 60-day window → None."""
+    from app.adapters.earnings import _lookup_sec_8k_filing
+
+    fake_response = type(
+        "R",
+        (),
+        {
+            "raise_for_status": lambda self: None,
+            "json": lambda self: _SEC_SUBMISSIONS_FIXTURE,
+        },
+    )()
+
+    class FakeClient:
+        async def get(self, _url: str) -> Any:
+            return fake_response
+
+    result = await _lookup_sec_8k_filing(FakeClient(), "NVDA", date(2026, 1, 1))
+    assert result is None
+
+
+async def test_row_to_raw_event_includes_sec_filing_and_yahoo_url() -> None:
+    row = {
+        "report_date": datetime(2026, 4, 30, tzinfo=UTC),
+        "eps_actual": 1.87,
+        "eps_estimate": 1.77,
+        "surprise_pct": 5.5,
+    }
+    sec_filing = {
+        "accession_number": "0001045810-26-000051",
+        "primary_doc_url": "https://www.sec.gov/Archives/edgar/data/1045810/.../nvda.htm",
+        "filing_date": "2026-05-20",
+    }
+    event = _row_to_raw_event("NVDA", row, None, sec_filing)
+    assert event is not None
+    assert event.payload["sec_filing"] == sec_filing
+    assert event.payload["yahoo_finance_url"] == "https://finance.yahoo.com/quote/NVDA/"

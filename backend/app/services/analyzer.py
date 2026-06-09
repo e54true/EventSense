@@ -135,7 +135,13 @@ def _build_predictions(
     affected = set(event.affected_tickers or [])
     is_company_event = event.event_type in _COMPANY_EVENT_TYPES
 
-    now = datetime.now(UTC)
+    # `predicted_at` anchors the validator's outcome calculation
+    # (baseline = price at predicted_at; end = price at predicted_at + window).
+    # For fresh events, event.published_at ≈ now within seconds, so this is
+    # equivalent to the old `now()` behavior. For backfilled historical events
+    # (earnings_history surfacing 4-month-old reports), it correctly anchors
+    # on the actual market reaction time rather than the analyzer-run time.
+    predicted_at = event.published_at
     rows: list[Prediction] = []
     for i, impact in enumerate(analysis.impacts):
         kind = PredictionKind(impact.kind)
@@ -172,7 +178,7 @@ def _build_predictions(
                 llm_model=choice.model,
                 prompt_version=clients.PROMPT_VERSION,
                 llm_cost_usd=cost_usd if i == 0 else 0.0,
-                predicted_at=now,
+                predicted_at=predicted_at,
             )
         )
     return rows

@@ -20,9 +20,11 @@ broad except.
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+import httpx
 import structlog
 import yfinance as yf
 
+from app.config.cik_map import TICKER_TO_CIK
 from app.config.settings import get_settings
 from app.db.models import EventSource
 from app.schemas.raw_event import RawEvent
@@ -52,6 +54,12 @@ _INCOME_STMT_METRICS: dict[str, str] = {
 # Tolerance for matching "same quarter previous year" — fiscal calendars
 # wobble a few days quarter to quarter (e.g. AAPL's 13-week quarters).
 _YOY_DATE_TOLERANCE_DAYS = 10
+
+# How many days AFTER quarter-end to search for the matching 8-K item 2.02
+# press release. Most issuers file within 4 weeks; 60 days is comfortable
+# headroom for stragglers and AAPL-style ~5-week fiscal calendars.
+_SEC_LOOKUP_WINDOW_DAYS = 60
+_SEC_API_TIMEOUT_SEC = 15.0
 
 
 def _earnings_history_rows(ticker: str) -> list[dict[str, Any]]:
@@ -178,6 +186,69 @@ def _yoy_growth_pct(
     return yoy
 
 
+async def _lookup_sec_8k_filing(
+    client: httpx.AsyncClient, ticker: str, report_date: date
+) -> dict[str, str] | None:
+    """Find the SEC 8-K item 2.02 press release matching a quarterly earnings report.
+
+    Strategy: hit SEC submissions/CIK*.json, walk the recent filings array,
+    return the first form=='8-K' with item_codes containing '2.02' filed
+    within (report_date, report_date + 60d].
+
+    Returns {accession_number, primary_doc_url, filing_date} or None on any
+    failure (network error, unmapped ticker, no matching filing).
+    """
+    cik = TICKER_TO_CIK.get(ticker)
+    if not cik:
+        return None
+
+    log = logger.bind(ticker=ticker, report_date=report_date.isoformat())
+    try:
+        response = await client.get(f"https://data.sec.gov/submissions/CIK{cik}.json")
+        response.raise_for_status()
+        submissions = response.json()
+    except Exception as exc:
+        log.warning("earnings.sec_lookup.fetch_failed", error=str(exc))
+        return None
+
+    recent = submissions.get("filings", {}).get("recent", {})
+    forms = recent.get("form", [])
+    items_list = recent.get("items", [])
+    filing_dates = recent.get("filingDate", [])
+    accession_nums = recent.get("accessionNumber", [])
+    primary_docs = recent.get("primaryDocument", [])
+
+    window_end = report_date + timedelta(days=_SEC_LOOKUP_WINDOW_DAYS)
+
+    for i, form in enumerate(forms):
+        if form != "8-K":
+            continue
+        items = items_list[i] if i < len(items_list) else ""
+        if "2.02" not in items:
+            continue
+        try:
+            filing_date = date.fromisoformat(filing_dates[i])
+        except (ValueError, IndexError):
+            continue
+        if not (report_date <= filing_date <= window_end):
+            continue
+
+        accession = accession_nums[i]
+        primary_doc = primary_docs[i] if i < len(primary_docs) else ""
+        accession_no_dashes = accession.replace("-", "")
+        doc_url = (
+            f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/"
+            f"{accession_no_dashes}/{primary_doc}"
+        )
+        return {
+            "accession_number": accession,
+            "primary_doc_url": doc_url,
+            "filing_date": filing_dates[i],
+        }
+
+    return None
+
+
 def _build_fundamentals(
     by_quarter: dict[date, dict[str, float | None]] | None, report_date: date
 ) -> dict[str, Any] | None:
@@ -198,6 +269,7 @@ def _row_to_raw_event(
     ticker: str,
     row: dict[str, Any],
     fundamentals: dict[str, Any] | None = None,
+    sec_filing: dict[str, str] | None = None,
 ) -> RawEvent | None:
     eps_actual = row["eps_actual"]
     if eps_actual is None:
@@ -222,9 +294,16 @@ def _row_to_raw_event(
         "eps_actual": eps_actual,
         "eps_estimate": eps_est,
         "surprise_percent": surprise,
+        # Yahoo Finance fallback link — always available, useful for casual exploration.
+        "yahoo_finance_url": f"https://finance.yahoo.com/quote/{ticker}/",
     }
     if fundamentals is not None:
         payload["fundamentals"] = fundamentals
+    if sec_filing is not None:
+        # Canonical source of the actual press release. The matching 8-K event
+        # (same accession_number) has the EX-99.1 body in event_documents — UI
+        # can deep-link via "View SEC filing" + cross-reference the 8-K event.
+        payload["sec_filing"] = sec_filing
 
     return RawEvent(
         source=EventSource.EARNINGS,
@@ -240,34 +319,42 @@ def _row_to_raw_event(
 async def fetch_new() -> list[RawEvent]:
     """Poll watchlist tickers and emit recent earnings reports as RawEvents.
 
-    For each ticker we make TWO yfinance calls: earnings_history (EPS surprise)
-    + quarterly_income_stmt (Revenue / NI / margin breakdown + Y/Y growth).
-    Either call failing on a ticker yields a degraded event (no fundamentals)
-    rather than dropping the event entirely.
+    For each ticker we make TWO yfinance calls (earnings_history + quarterly
+    income statement) plus ONE SEC submissions lookup per (ticker, quarter)
+    to attach the matching 8-K item 2.02 press release URL. Any individual
+    call failing yields a degraded event (missing fundamentals or sec link)
+    rather than dropping the event.
     """
-    tickers = get_settings().watchlist
+    settings = get_settings()
+    tickers = settings.watchlist
     cutoff = datetime.now(UTC) - timedelta(days=LOOKBACK_DAYS)
 
     log = logger.bind(source="EARNINGS", tickers=len(tickers))
     log.info("earnings.fetch.started")
 
+    sec_headers = {"User-Agent": settings.sec_user_agent}
     events: list[RawEvent] = []
-    for ticker in tickers:
-        # SPY/QQQ are ETFs without earnings — skip cheaply.
-        if ticker in {"SPY", "QQQ"}:
-            continue
-        rows = _earnings_history_rows(ticker)
-        if not rows:
-            continue
-        # One income_stmt fetch per ticker, reused across all that ticker's rows.
-        income_by_quarter = _fetch_income_stmt_by_quarter(ticker)
-        for row in rows:
-            if row["report_date"] < cutoff:
+    async with httpx.AsyncClient(
+        timeout=_SEC_API_TIMEOUT_SEC, headers=sec_headers, follow_redirects=True
+    ) as sec_client:
+        for ticker in tickers:
+            # SPY/QQQ are ETFs without earnings — skip cheaply.
+            if ticker in {"SPY", "QQQ"}:
                 continue
-            fundamentals = _build_fundamentals(income_by_quarter, row["report_date"].date())
-            event = _row_to_raw_event(ticker, row, fundamentals)
-            if event is not None:
-                events.append(event)
+            rows = _earnings_history_rows(ticker)
+            if not rows:
+                continue
+            # One income_stmt fetch per ticker, reused across all that ticker's rows.
+            income_by_quarter = _fetch_income_stmt_by_quarter(ticker)
+            for row in rows:
+                if row["report_date"] < cutoff:
+                    continue
+                quarter_date = row["report_date"].date()
+                fundamentals = _build_fundamentals(income_by_quarter, quarter_date)
+                sec_filing = await _lookup_sec_8k_filing(sec_client, ticker, quarter_date)
+                event = _row_to_raw_event(ticker, row, fundamentals, sec_filing)
+                if event is not None:
+                    events.append(event)
 
     log.info("earnings.fetch.completed", parsed=len(events))
     return events
