@@ -1,20 +1,19 @@
 "use client";
 
-// Price chart showing ticker vs SPY around the event's published_at.
+// Price chart showing N tickers around the event's published_at, each
+// rebased to 100 at the start of the window so the lines share an axis
+// regardless of absolute price.
 //
-// We anchor the chart on `publishedAt` (when the market actually saw the
-// event) rather than `predictedAt` (when the analyzer happened to run). For
-// freshly-ingested events these are within seconds of each other, but for
-// historical backfill (earnings reports from N months ago surfaced by today's
-// adapter run) they can differ by weeks — and the market reaction happened
-// around publishedAt, not predictedAt.
+// Caller decides which tickers — typically:
+//   - company event (8-K, earnings):  [companyTicker, SPY, QQQ]
+//   - macro event (CPI/NFP/GDP/FOMC): [SPY, QQQ]
 //
-// Both series are *normalized to 100 at the first data point* so they share
-// an axis regardless of absolute price. publishedAt is marked with the primary
-// vertical ReferenceLine; predictedAt is marked separately when it differs
-// from publishedAt by more than a day.
+// publishedAt is the primary anchor (event time → market reaction window).
+// predictedAt is marked separately only when it differs from publishedAt
+// by more than a day (historical backfill case where the analyzer ran
+// long after the event).
 
-import { useQuery } from "@tanstack/react-query";
+import { useQueries } from "@tanstack/react-query";
 import {
   CartesianGrid,
   Legend,
@@ -32,52 +31,45 @@ import { api } from "@/lib/api";
 import type { PricePoint } from "@/lib/types";
 
 interface Props {
-  ticker: string;
-  publishedAt: string; // ISO 8601 — event time, primary anchor
-  predictedAt: string; // ISO 8601 — analyzer run time, secondary marker
+  tickers: string[];
+  publishedAt: string;
+  predictedAt: string;
 }
 
-// Pull a window centered on the event: 1 day before through 7 days after.
-// 30-day cap on the backend means we have room to expand later.
 const BEFORE_HOURS = 24;
 const AFTER_HOURS = 24 * 7;
-// If predicted_at lags published_at by more than this, draw a second
-// reference line so the user can see "the analyzer was late to this event".
 const PREDICTED_LINE_GAP_THRESHOLD_HOURS = 24;
+
+// Stable colour per ticker so the same line means the same thing across
+// different event pages. SPY/QQQ stay muted (baselines); company tickers
+// get a vivid colour.
+const LINE_STYLE: Record<string, { stroke: string; strokeWidth: number; strokeDasharray?: string }> =
+  {
+    SPY: { stroke: "#94a3b8", strokeWidth: 1.5, strokeDasharray: "4 2" },
+    QQQ: { stroke: "#f59e0b", strokeWidth: 1.5, strokeDasharray: "6 3" },
+  };
+const COMPANY_STYLE = { stroke: "#0f172a", strokeWidth: 2 };
+
+function styleFor(ticker: string) {
+  return LINE_STYLE[ticker] ?? COMPANY_STYLE;
+}
 
 function isoOffset(from: Date, hours: number): string {
   return new Date(from.getTime() + hours * 3600_000).toISOString();
 }
 
-interface MergedPoint {
-  ts: number; // ms epoch — Recharts handles ints better than strings on the x-axis
-  tickerNormalized?: number;
-  spyNormalized?: number;
-}
-
-// Resample to one point per calendar day (UTC). The backfill mixes daily
-// closes (1pt/day for old data) with intraday minute bars (1pt/min for last
-// 5 days) — plotting both together makes the line look smooth then suddenly
-// jagged. For an 8-day window the daily-close resolution is what the user
-// actually wants to see ("what was each day's close worth?").
 function resampleDaily(points: PricePoint[]): PricePoint[] {
   if (points.length === 0) return points;
-  // Keep the last sample of each UTC date. We iterate in order, overwriting
-  // earlier samples for the same day so the final map holds end-of-day prices.
   const byDay = new Map<string, PricePoint>();
   for (const p of points) {
-    const day = p.snapshot_at.slice(0, 10); // YYYY-MM-DD
-    byDay.set(day, p);
+    byDay.set(p.snapshot_at.slice(0, 10), p);
   }
   return Array.from(byDay.values()).sort(
-    (a, b) =>
-      new Date(a.snapshot_at).getTime() - new Date(b.snapshot_at).getTime(),
+    (a, b) => new Date(a.snapshot_at).getTime() - new Date(b.snapshot_at).getTime(),
   );
 }
 
 function rebase(points: PricePoint[]): Map<number, number> {
-  // Find the price closest to (but not after) the first sample, then divide
-  // every later price by it × 100 so the series starts at 100.
   if (points.length === 0) return new Map();
   const base = Number(points[0].price);
   const out = new Map<number, number>();
@@ -87,7 +79,12 @@ function rebase(points: PricePoint[]): Map<number, number> {
   return out;
 }
 
-export function PriceChart({ ticker, publishedAt, predictedAt }: Props) {
+interface MergedPoint {
+  ts: number;
+  [tickerKey: string]: number | undefined;
+}
+
+export function PriceChart({ tickers, publishedAt, predictedAt }: Props) {
   const publishedDate = new Date(publishedAt);
   const predictedDate = new Date(predictedAt);
   const fromAt = isoOffset(publishedDate, -BEFORE_HOURS);
@@ -97,31 +94,37 @@ export function PriceChart({ ticker, publishedAt, predictedAt }: Props) {
   const showPredictedLine =
     Math.abs(predictedDriftHours) > PREDICTED_LINE_GAP_THRESHOLD_HOURS;
 
-  // Two parallel queries — Recharts is happy with whichever arrives first
-  // (we render dots/lines incrementally as each finishes).
-  const tickerQuery = useQuery({
-    queryKey: ["prices.range", ticker, fromAt, toAt],
-    queryFn: () => api.getPriceRange(ticker, fromAt, toAt),
+  // De-dupe in case caller passes overlapping tickers (e.g. company == SPY edge case).
+  const uniqueTickers = Array.from(new Set(tickers));
+
+  const queries = useQueries({
+    queries: uniqueTickers.map((ticker) => ({
+      queryKey: ["prices.range", ticker, fromAt, toAt],
+      queryFn: () => api.getPriceRange(ticker, fromAt, toAt),
+      staleTime: 5 * 60_000,
+    })),
   });
 
-  const spyQuery = useQuery({
-    queryKey: ["prices.range", "SPY", fromAt, toAt],
-    queryFn: () => api.getPriceRange("SPY", fromAt, toAt),
-    // SPY is shared across most predictions — bump cache time so opening
-    // multiple event detail pages doesn't re-fetch the same window.
-    staleTime: 5 * 60_000,
-  });
-
-  if (tickerQuery.isLoading || spyQuery.isLoading) {
-    return (
-      <div className="h-72 rounded-xl border border-slate-200 bg-white animate-pulse" />
-    );
+  const anyLoading = queries.some((q) => q.isLoading);
+  if (anyLoading) {
+    return <div className="h-72 rounded-xl border border-slate-200 bg-white animate-pulse" />;
   }
 
-  const tickerPoints = resampleDaily(tickerQuery.data?.points ?? []);
-  const spyPoints = resampleDaily(spyQuery.data?.points ?? []);
+  // Per-ticker daily resample + rebase to 100 at first sample.
+  const perTickerMap = new Map<string, Map<number, number>>();
+  for (let i = 0; i < uniqueTickers.length; i++) {
+    const ticker = uniqueTickers[i];
+    const points = resampleDaily(queries[i].data?.points ?? []);
+    perTickerMap.set(ticker, rebase(points));
+  }
 
-  if (tickerPoints.length === 0 && spyPoints.length === 0) {
+  // Union of all timestamps across all tickers.
+  const allTs = new Set<number>();
+  for (const m of perTickerMap.values()) {
+    for (const ts of m.keys()) allTs.add(ts);
+  }
+
+  if (allTs.size === 0) {
     return (
       <div className="rounded-xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-600">
         No price data for {format(publishedDate, "PP")} ± {AFTER_HOURS / 24}d.
@@ -135,23 +138,21 @@ export function PriceChart({ ticker, publishedAt, predictedAt }: Props) {
     );
   }
 
-  // Merge by timestamp into a single array (Recharts wants one row per x-tick).
-  const tickerMap = rebase(tickerPoints);
-  const spyMap = rebase(spyPoints);
-  const allTs = new Set<number>([...tickerMap.keys(), ...spyMap.keys()]);
   const data: MergedPoint[] = Array.from(allTs)
     .sort((a, b) => a - b)
-    .map((ts) => ({
-      ts,
-      tickerNormalized: tickerMap.get(ts),
-      spyNormalized: spyMap.get(ts),
-    }));
+    .map((ts) => {
+      const row: MergedPoint = { ts };
+      for (const [ticker, m] of perTickerMap) {
+        row[ticker] = m.get(ts);
+      }
+      return row;
+    });
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4">
       <div className="mb-2 flex items-center justify-between">
         <h3 className="text-sm font-semibold text-slate-900">
-          {ticker} vs SPY · daily closes, rebased to 100 at event
+          {uniqueTickers.join(" / ")} · daily closes, rebased to 100 at event
         </h3>
         <span className="text-xs text-slate-500 tabular-nums">
           {data.length} days
@@ -180,7 +181,7 @@ export function PriceChart({ ticker, publishedAt, predictedAt }: Props) {
             labelFormatter={(ts) => format(new Date(Number(ts)), "PPpp")}
             formatter={(value, name) => {
               const num = typeof value === "number" ? value : Number(value);
-              return [num.toFixed(2), name === "tickerNormalized" ? ticker : "SPY"];
+              return [num.toFixed(2), name];
             }}
             contentStyle={{
               fontSize: 12,
@@ -191,9 +192,6 @@ export function PriceChart({ ticker, publishedAt, predictedAt }: Props) {
           <Legend
             iconType="line"
             wrapperStyle={{ fontSize: 12, paddingTop: 8 }}
-            formatter={(value: string) =>
-              value === "tickerNormalized" ? ticker : "SPY"
-            }
           />
           <ReferenceLine
             x={publishedDate.getTime()}
@@ -219,26 +217,24 @@ export function PriceChart({ ticker, publishedAt, predictedAt }: Props) {
               }}
             />
           )}
-          <Line
-            type="monotone"
-            dataKey="tickerNormalized"
-            stroke="#0f172a"
-            strokeWidth={2}
-            dot={{ r: 3, fill: "#0f172a" }}
-            activeDot={{ r: 5 }}
-            connectNulls
-            isAnimationActive={false}
-          />
-          <Line
-            type="monotone"
-            dataKey="spyNormalized"
-            stroke="#94a3b8"
-            strokeWidth={1.5}
-            dot={{ r: 2, fill: "#94a3b8" }}
-            strokeDasharray="4 2"
-            connectNulls
-            isAnimationActive={false}
-          />
+          {uniqueTickers.map((ticker) => {
+            const s = styleFor(ticker);
+            return (
+              <Line
+                key={ticker}
+                type="monotone"
+                dataKey={ticker}
+                name={ticker}
+                stroke={s.stroke}
+                strokeWidth={s.strokeWidth}
+                strokeDasharray={s.strokeDasharray}
+                dot={{ r: 2, fill: s.stroke }}
+                activeDot={{ r: 5 }}
+                connectNulls
+                isAnimationActive={false}
+              />
+            );
+          })}
         </LineChart>
       </ResponsiveContainer>
     </div>

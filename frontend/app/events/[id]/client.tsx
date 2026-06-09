@@ -129,14 +129,11 @@ export function EventDetailClient({ id }: { id: string }) {
               — windowed on event time, rebased to 100
             </span>
           </h2>
-          {predictions.slice(0, 1).map((p) => (
-            <PriceChart
-              key={p.id}
-              ticker={p.ticker}
-              publishedAt={event.published_at}
-              predictedAt={p.predicted_at}
-            />
-          ))}
+          <PriceChart
+            tickers={chartTickersForEvent(event)}
+            publishedAt={event.published_at}
+            predictedAt={predictions[0].predicted_at}
+          />
         </section>
       )}
 
@@ -312,6 +309,25 @@ function SourceLinks({ payload }: { payload: Record<string, unknown> }) {
       ))}
     </div>
   );
+}
+
+// Pick which tickers to plot on the price chart for a given event.
+// Company events (8-K, earnings) get [company, SPY, QQQ] — the subject ticker
+// plus both index baselines. Macro events (CPI/NFP/GDP/FOMC/dot plot) get
+// just the index baselines since there's no per-company subject.
+const COMPANY_EVENT_TYPES = new Set(["8K_FILING", "EARNINGS_REPORT"]);
+const INDEX_BASELINES = ["SPY", "QQQ"];
+
+function chartTickersForEvent(event: {
+  event_type: string;
+  affected_tickers: string[];
+}): string[] {
+  const isCompany = COMPANY_EVENT_TYPES.has(event.event_type);
+  const company = event.affected_tickers[0];
+  if (isCompany && company && !INDEX_BASELINES.includes(company)) {
+    return [company, ...INDEX_BASELINES];
+  }
+  return INDEX_BASELINES;
 }
 
 function StatusChip({ status }: { status: string }) {
