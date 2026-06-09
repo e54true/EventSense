@@ -1,11 +1,18 @@
 "use client";
 
-// Price chart showing ticker vs SPY around a prediction's predicted_at.
+// Price chart showing ticker vs SPY around the event's published_at.
 //
-// Both series are *normalized to 100 at predicted_at* so they share an axis
-// regardless of absolute price (a $500 SPY and a $180 AAPL look the same
-// shape when re-based). The prediction time is marked with a vertical
-// ReferenceLine so you can eyeball "did the lines diverge after this event?"
+// We anchor the chart on `publishedAt` (when the market actually saw the
+// event) rather than `predictedAt` (when the analyzer happened to run). For
+// freshly-ingested events these are within seconds of each other, but for
+// historical backfill (earnings reports from N months ago surfaced by today's
+// adapter run) they can differ by weeks — and the market reaction happened
+// around publishedAt, not predictedAt.
+//
+// Both series are *normalized to 100 at the first data point* so they share
+// an axis regardless of absolute price. publishedAt is marked with the primary
+// vertical ReferenceLine; predictedAt is marked separately when it differs
+// from publishedAt by more than a day.
 
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -26,13 +33,17 @@ import type { PricePoint } from "@/lib/types";
 
 interface Props {
   ticker: string;
-  predictedAt: string; // ISO 8601
+  publishedAt: string; // ISO 8601 — event time, primary anchor
+  predictedAt: string; // ISO 8601 — analyzer run time, secondary marker
 }
 
-// Pull a window centered on the prediction: 1 day before through 7 days after.
+// Pull a window centered on the event: 1 day before through 7 days after.
 // 30-day cap on the backend means we have room to expand later.
 const BEFORE_HOURS = 24;
 const AFTER_HOURS = 24 * 7;
+// If predicted_at lags published_at by more than this, draw a second
+// reference line so the user can see "the analyzer was late to this event".
+const PREDICTED_LINE_GAP_THRESHOLD_HOURS = 24;
 
 function isoOffset(from: Date, hours: number): string {
   return new Date(from.getTime() + hours * 3600_000).toISOString();
@@ -76,10 +87,15 @@ function rebase(points: PricePoint[]): Map<number, number> {
   return out;
 }
 
-export function PriceChart({ ticker, predictedAt }: Props) {
-  const predictionDate = new Date(predictedAt);
-  const fromAt = isoOffset(predictionDate, -BEFORE_HOURS);
-  const toAt = isoOffset(predictionDate, AFTER_HOURS);
+export function PriceChart({ ticker, publishedAt, predictedAt }: Props) {
+  const publishedDate = new Date(publishedAt);
+  const predictedDate = new Date(predictedAt);
+  const fromAt = isoOffset(publishedDate, -BEFORE_HOURS);
+  const toAt = isoOffset(publishedDate, AFTER_HOURS);
+  const predictedDriftHours =
+    (predictedDate.getTime() - publishedDate.getTime()) / 3600_000;
+  const showPredictedLine =
+    Math.abs(predictedDriftHours) > PREDICTED_LINE_GAP_THRESHOLD_HOURS;
 
   // Two parallel queries — Recharts is happy with whichever arrives first
   // (we render dots/lines incrementally as each finishes).
@@ -108,10 +124,13 @@ export function PriceChart({ ticker, predictedAt }: Props) {
   if (tickerPoints.length === 0 && spyPoints.length === 0) {
     return (
       <div className="rounded-xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-600">
-        No price data available in the prediction window
-        ({BEFORE_HOURS}h before to {AFTER_HOURS}h after).
+        No price data for {format(publishedDate, "PP")} ± {AFTER_HOURS / 24}d.
         <br />
-        Run the backfill or wait for the next price-fetch tick.
+        <span className="text-xs text-slate-500">
+          This usually means the event predates the system&apos;s price-snapshot
+          history. Running the price backfill against this window would fill
+          the chart.
+        </span>
       </div>
     );
   }
@@ -132,7 +151,7 @@ export function PriceChart({ ticker, predictedAt }: Props) {
     <div className="rounded-xl border border-slate-200 bg-white p-4">
       <div className="mb-2 flex items-center justify-between">
         <h3 className="text-sm font-semibold text-slate-900">
-          {ticker} vs SPY · daily closes, rebased to 100 at prediction
+          {ticker} vs SPY · daily closes, rebased to 100 at event
         </h3>
         <span className="text-xs text-slate-500 tabular-nums">
           {data.length} days
@@ -177,16 +196,29 @@ export function PriceChart({ ticker, predictedAt }: Props) {
             }
           />
           <ReferenceLine
-            x={predictionDate.getTime()}
+            x={publishedDate.getTime()}
             stroke="#6366f1"
             strokeDasharray="4 4"
             label={{
-              value: "predicted",
+              value: "event",
               position: "top",
               fill: "#6366f1",
               fontSize: 11,
             }}
           />
+          {showPredictedLine && (
+            <ReferenceLine
+              x={predictedDate.getTime()}
+              stroke="#94a3b8"
+              strokeDasharray="2 4"
+              label={{
+                value: "analyzed",
+                position: "top",
+                fill: "#64748b",
+                fontSize: 10,
+              }}
+            />
+          )}
           <Line
             type="monotone"
             dataKey="tickerNormalized"

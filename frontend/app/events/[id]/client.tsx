@@ -120,13 +120,14 @@ export function EventDetailClient({ id }: { id: string }) {
           <h2 className="text-sm font-semibold text-slate-900 uppercase tracking-wide">
             Price action
             <span className="ml-2 text-slate-400 normal-case">
-              — predicted_at marked, lines rebased to 100
+              — windowed on event time, rebased to 100
             </span>
           </h2>
           {predictions.slice(0, 1).map((p) => (
             <PriceChart
               key={p.id}
               ticker={p.ticker}
+              publishedAt={event.published_at}
               predictedAt={p.predicted_at}
             />
           ))}
