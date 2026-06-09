@@ -198,15 +198,18 @@ async def test_existing_outcome_not_rewritten(clean_db: AsyncSession) -> None:
     assert outcome_count_after_first == outcome_count_after_second
 
 
-async def test_bearish_correct_when_ticker_underperforms(clean_db: AsyncSession) -> None:
+async def test_bearish_correct_when_ticker_falls(clean_db: AsyncSession) -> None:
     now = datetime.now(UTC)
     predicted_at = now - timedelta(hours=25)
 
-    # AAPL flat, SPY +3% → excess -3%. BEARISH prediction is "right" in excess terms.
+    # AAPL -3%, SPY flat. BEARISH prediction is right because AAPL actually fell.
+    # (Under the previous excess-vs-SPY semantics, "AAPL flat / SPY +3%" also
+    # counted as BEARISH-aligned; the new rule only credits BEARISH when the
+    # ticker itself falls beyond the NEUTRAL_THRESHOLD.)
     await _seed_price(clean_db, "AAPL", predicted_at, "100.0000")
-    await _seed_price(clean_db, "AAPL", predicted_at + timedelta(hours=24), "100.0000")
+    await _seed_price(clean_db, "AAPL", predicted_at + timedelta(hours=24), "97.0000")
     await _seed_price(clean_db, "SPY", predicted_at, "500.0000")
-    await _seed_price(clean_db, "SPY", predicted_at + timedelta(hours=24), "515.0000")
+    await _seed_price(clean_db, "SPY", predicted_at + timedelta(hours=24), "500.0000")
 
     pred = await _seed_event_and_prediction(
         clean_db, ticker="AAPL", direction=PredictionDirection.BEARISH, predicted_at=predicted_at
@@ -220,5 +223,5 @@ async def test_bearish_correct_when_ticker_underperforms(clean_db: AsyncSession)
         )
     )
     assert outcome is not None
-    assert outcome.excess_return < 0
-    assert outcome.aligned is True  # BEARISH + underperformance = right call
+    assert outcome.ticker_return < 0
+    assert outcome.aligned is True  # BEARISH + ticker fell > 0.5% = right call

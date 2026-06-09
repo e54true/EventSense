@@ -179,15 +179,10 @@ async def _build_outcome(
 
     ticker_ret = alignment.ticker_return(float(baseline_ticker), float(end_ticker))
     spy_ret = alignment.ticker_return(float(baseline_spy), float(end_spy))
+    # excess is still computed + stored for analytics, but aligned now uses
+    # raw_return for both MARKET and COMPANY (see alignment.py docstring).
     excess = alignment.excess_return(ticker_ret, spy_ret)
-    # Thread kind + raw_return so MARKET predictions (especially SPY-vs-SPY)
-    # align on the raw market move, not the definitionally-zero excess.
-    aligned = alignment.is_aligned(
-        prediction.direction,
-        excess,
-        kind=prediction.kind,
-        raw_return=ticker_ret,
-    )
+    aligned = alignment.is_aligned(prediction.direction, ticker_ret)
 
     return PredictionOutcome(
         prediction_id=prediction.id,

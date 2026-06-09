@@ -56,25 +56,34 @@ def test_excess_return_followed_market_exactly() -> None:
 
 
 class TestBullishAlignment:
-    def test_aligned_when_excess_positive(self) -> None:
+    def test_aligned_when_move_above_threshold(self) -> None:
         assert is_aligned(PredictionDirection.BULLISH, 0.02) is True
 
-    def test_not_aligned_when_excess_zero(self) -> None:
+    def test_not_aligned_when_move_zero(self) -> None:
         assert is_aligned(PredictionDirection.BULLISH, 0.0) is False
 
-    def test_not_aligned_when_excess_negative(self) -> None:
+    def test_not_aligned_when_move_negative(self) -> None:
         assert is_aligned(PredictionDirection.BULLISH, -0.01) is False
+
+    def test_not_aligned_when_small_positive_under_threshold(self) -> None:
+        # +0.3% is positive but under the 0.5% threshold → BULLISH not aligned
+        # (would have been the right call only if predicted NEUTRAL).
+        assert is_aligned(PredictionDirection.BULLISH, 0.003) is False
 
 
 class TestBearishAlignment:
-    def test_aligned_when_excess_negative(self) -> None:
+    def test_aligned_when_move_below_neg_threshold(self) -> None:
         assert is_aligned(PredictionDirection.BEARISH, -0.02) is True
 
-    def test_not_aligned_when_excess_zero(self) -> None:
+    def test_not_aligned_when_move_zero(self) -> None:
         assert is_aligned(PredictionDirection.BEARISH, 0.0) is False
 
-    def test_not_aligned_when_excess_positive(self) -> None:
+    def test_not_aligned_when_move_positive(self) -> None:
         assert is_aligned(PredictionDirection.BEARISH, 0.01) is False
+
+    def test_not_aligned_when_small_negative_above_neg_threshold(self) -> None:
+        # -0.3% is negative but within ±0.5% threshold → BEARISH not aligned.
+        assert is_aligned(PredictionDirection.BEARISH, -0.003) is False
 
 
 class TestNeutralAlignment:
