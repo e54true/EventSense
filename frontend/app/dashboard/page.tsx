@@ -20,7 +20,8 @@ import { api } from "@/lib/api";
 import type { EventSource, OutcomeWindow, PredictionKind } from "@/lib/types";
 
 const SOURCES: EventSource[] = ["FRED", "SEC_EDGAR", "FOMC", "EARNINGS"];
-const WINDOWS: OutcomeWindow[] = ["1h", "24h", "7d"];
+// 1h dropped — see OutcomesTable.tsx / validator.py for rationale.
+const WINDOWS: OutcomeWindow[] = ["24h", "7d"];
 const KINDS: PredictionKind[] = ["MARKET", "COMPANY"];
 
 export default function DashboardPage() {

@@ -81,7 +81,7 @@ export function PredictionLegend() {
         <div>
           <strong className="text-slate-900">Windows</strong> — outcomes
           mature at three horizons after prediction time:
-          <span className="ml-2 font-mono text-slate-600">1h · 24h · 7d</span>.
+          <span className="ml-2 font-mono text-slate-600">24h · 7d</span>.
           Missing rows mean either the window hasn&apos;t elapsed yet, or the
           price snapshot needed to compute it isn&apos;t available.
         </div>

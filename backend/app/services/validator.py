@@ -40,17 +40,21 @@ BENCHMARK_TICKER = "SPY"
 _PRICE_AVAILABILITY_BUFFER = timedelta(minutes=15)
 
 # Map enum value → real-world duration.
+#
+# H1 is intentionally not iterated here even though OutcomeWindow.H1 still
+# exists in the enum (back-compat). Rationale: for events whose published_at
+# falls outside US trading hours (most macro / earnings backfill events sit
+# at 00:00 UTC), the 1h tolerance window never overlaps with our daily price
+# snapshots → H1 outcomes permanently defer, burning a candidate slot every
+# tick. Event-driven analysis is well-served by 24h and 7d alone. Existing
+# H1 rows from earlier deploys are left in place; no new ones get written.
 _WINDOW_DURATIONS: dict[OutcomeWindow, timedelta] = {
-    OutcomeWindow.H1: timedelta(hours=1),
     OutcomeWindow.H24: timedelta(hours=24),
     OutcomeWindow.D7: timedelta(days=7),
 }
 
 # How far back from the target timestamp we'll accept a price snapshot.
-# We don't want to grab a 3-day-old close as "the 1h price" — that would
-# generate misleading outcomes.
 _PRICE_LOOKBACK_TOLERANCE: dict[OutcomeWindow, timedelta] = {
-    OutcomeWindow.H1: timedelta(hours=1),  # tight: intraday only
     OutcomeWindow.H24: timedelta(hours=24),  # next day's daily close is fine
     OutcomeWindow.D7: timedelta(days=4),  # weekend gap allowed
 }

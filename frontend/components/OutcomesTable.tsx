@@ -13,9 +13,13 @@
 import type { OutcomeRead, OutcomeWindow } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-const WINDOWS: OutcomeWindow[] = ["1h", "24h", "7d"];
+// 1h dropped — for events whose predicted_at sits at 00:00 UTC (off-hours),
+// the validator's 1h price-tolerance window never overlaps with our daily
+// price snapshots, so H1 outcomes never write. See validator.py rationale.
+// Old H1 outcomes from prior deploys, if any, are simply not rendered.
+const WINDOWS: OutcomeWindow[] = ["24h", "7d"];
 const WINDOW_DURATION_HOURS: Record<OutcomeWindow, number> = {
-  "1h": 1,
+  "1h": 1, // kept for type completeness; not iterated.
   "24h": 24,
   "7d": 7 * 24,
 };
