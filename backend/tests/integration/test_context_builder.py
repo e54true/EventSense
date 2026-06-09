@@ -10,7 +10,18 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config.settings import get_settings
-from app.db.models import Event, EventSource, EventStatus, Indicator
+from app.db.models import (
+    Event,
+    EventSource,
+    EventStatus,
+    Indicator,
+    OutcomeWindow,
+    Prediction,
+    PredictionDirection,
+    PredictionKind,
+    PredictionMagnitude,
+    PredictionOutcome,
+)
 from app.services.context_builder import build_context
 
 _TRIGGER_AT = datetime(2026, 6, 1, 14, 30, tzinfo=UTC)
@@ -172,3 +183,86 @@ async def test_context_respects_recent_events_cap(clean_db: AsyncSession) -> Non
     assert len(ctx.recent_events) == 3
     # Newest first by published_at DESC
     assert ctx.recent_events[0].title == "event r0"
+
+
+async def test_context_includes_prior_predictions_with_leak_safe_outcomes(
+    clean_db: AsyncSession,
+) -> None:
+    """A past event with a prediction + outcomes shows up in recent_events
+    with prior_predictions populated. Outcomes validated AFTER the
+    triggering event are dropped (leak prevention)."""
+    trigger_at = _TRIGGER_AT
+    past_at = trigger_at - timedelta(days=5)
+
+    # Seed a past event + a prediction on it
+    past_event = await _seed_event(
+        clean_db, external_id="past", published_at=past_at
+    )
+    pred = Prediction(
+        event_id=past_event.id,
+        ticker="NVDA",
+        kind=PredictionKind.COMPANY,
+        direction=PredictionDirection.BULLISH,
+        magnitude=PredictionMagnitude.HIGH,
+        confidence=0.8,
+        reasoning="Strong AI tailwind.",
+        llm_provider="openai",
+        llm_model="gpt-4o-mini",
+        prompt_version="v2",
+        llm_cost_usd=0.001,
+        predicted_at=past_at,
+    )
+    clean_db.add(pred)
+    await clean_db.commit()
+    await clean_db.refresh(pred)
+
+    # Outcome A: validated BEFORE trigger → should appear in prompt
+    pre_trigger_outcome = PredictionOutcome(
+        prediction_id=pred.id,
+        window=OutcomeWindow.H24,
+        baseline_price=Decimal("100.00"),
+        end_price=Decimal("102.00"),
+        ticker_return=0.02,
+        spy_return=0.005,
+        excess_return=0.015,
+        aligned=True,
+        validated_at=trigger_at - timedelta(hours=1),
+    )
+    # Outcome B: validated AFTER trigger → leak prevention, should NOT appear
+    post_trigger_outcome = PredictionOutcome(
+        prediction_id=pred.id,
+        window=OutcomeWindow.D7,
+        baseline_price=Decimal("100.00"),
+        end_price=Decimal("105.00"),
+        ticker_return=0.05,
+        spy_return=0.01,
+        excess_return=0.04,
+        aligned=True,
+        validated_at=trigger_at + timedelta(hours=1),
+    )
+    clean_db.add_all([pre_trigger_outcome, post_trigger_outcome])
+    await clean_db.commit()
+
+    # Triggering event AFTER the past event
+    trigger = await _seed_event(
+        clean_db, external_id="trigger", published_at=trigger_at
+    )
+
+    ctx = await build_context(
+        clean_db,
+        trigger,
+        lookback_days=30,
+        recent_events_cap=50,
+        watchlist=["NVDA", "SPY"],
+    )
+
+    past_summary = next(e for e in ctx.recent_events if e.title == "event past")
+    assert len(past_summary.prior_predictions) == 1
+    pp = past_summary.prior_predictions[0]
+    assert pp.ticker == "NVDA"
+    assert pp.kind == PredictionKind.COMPANY
+    assert pp.confidence == pytest.approx(0.8)
+    # Only the pre-trigger outcome should be visible — D7 validated AFTER trigger is dropped
+    assert len(pp.outcomes) == 1
+    assert pp.outcomes[0].window == OutcomeWindow.H24
+    assert pp.outcomes[0].aligned is True

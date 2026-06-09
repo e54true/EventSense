@@ -168,16 +168,110 @@ def _render_indicators_table(snapshots: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# Cap per-event body excerpt in the recent-events table so a single chatty
+# FOMC statement doesn't dominate the lookback section. Real Fed statements
+# run 2-3 KB; 400 chars is enough to read the key sentence + tail.
+_RECENT_EVENT_BODY_CHARS = 400
+
+
+def _recent_event_highlight(event: Any) -> str:
+    """One-line highlight per event type — pulled out of the payload so the
+    LLM sees more than the bare title.
+
+    Adding a new event_type without a case here yields an empty highlight
+    (the title alone still renders) — graceful degrade.
+    """
+    p = event.payload if isinstance(event.payload, dict) else {}
+    et = event.event_type
+
+    if et == "CPI_RELEASE":
+        v = p.get("value")
+        return f"CPI index level={v}" if v is not None else ""
+    if et == "NFP_RELEASE":
+        v = p.get("value")
+        return f"nonfarm payrolls (thousands)={v}" if v is not None else ""
+    if et == "GDP_RELEASE":
+        v = p.get("value")
+        return f"real GDP (billions, SAAR)={v}" if v is not None else ""
+    if et == "FOMC_STATEMENT":
+        # Phase C body is the actual Fed press release text; truncate.
+        body = p.get("body") or p.get("description") or ""
+        body_one_line = " ".join(body.split())
+        return body_one_line[:_RECENT_EVENT_BODY_CHARS]
+    if et == "DOT_PLOT_RELEASE":
+        median = p.get("fed_funds_rate", {}).get("median", {})
+        if median:
+            parts = [f"{yr}={v}" for yr, v in median.items()]
+            return "fed funds rate median — " + ", ".join(parts)
+        return ""
+    if et == "8K_FILING":
+        ticker = p.get("ticker", "")
+        items = p.get("item_codes", "")
+        return f"{ticker} 8-K items={items}" if items else ""
+    if et == "EARNINGS_REPORT":
+        ticker = p.get("ticker", "")
+        surprise = p.get("surprise_percent")
+        f = p.get("fundamentals") or {}
+        rev = f.get("revenue")
+        rev_yoy = f.get("revenue_yoy_pct")
+        parts = []
+        if surprise is not None:
+            parts.append(f"EPS surprise {surprise:+.2f}%")
+        if rev is not None:
+            parts.append(f"Revenue ${rev / 1e9:.1f}B")
+        if rev_yoy is not None:
+            parts.append(f"Rev YoY {rev_yoy:+.1f}%")
+        return f"{ticker}: " + ", ".join(parts) if parts else ""
+    return ""
+
+
+# When inlining a prior prediction's reasoning into the prompt, truncate to
+# keep the recent-events section bounded. Per-prediction storage is
+# unaffected (DB still has the full text).
+_PRIOR_REASONING_INLINE_CHARS = 250
+
+
+def _render_prior_prediction(p: Any) -> str:
+    """One-line-per-prediction summary including reasoning excerpt + outcomes."""
+    kind_str = p.kind.value if hasattr(p.kind, "value") else str(p.kind)
+    direction_str = p.direction.value if hasattr(p.direction, "value") else str(p.direction)
+    magnitude_str = p.magnitude.value if hasattr(p.magnitude, "value") else str(p.magnitude)
+    reasoning = p.reasoning[:_PRIOR_REASONING_INLINE_CHARS]
+    if len(p.reasoning) > _PRIOR_REASONING_INLINE_CHARS:
+        reasoning += "…"
+    line = (
+        f"    • {p.ticker} {kind_str} {direction_str} {magnitude_str} "
+        f"conf={p.confidence:.2f} [{p.prompt_version}]"
+    )
+    if p.outcomes:
+        outcomes_str = ", ".join(
+            f"{o.window.value if hasattr(o.window, 'value') else o.window}: "
+            f"excess={o.excess_return:+.2%} aligned={'✓' if o.aligned else '✗'}"
+            for o in p.outcomes
+        )
+        line += f"\n      outcomes: {outcomes_str}"
+    line += f'\n      reasoning: "{reasoning}"'
+    return line
+
+
 def _render_recent_events_table(events: list[Any]) -> str:
-    """Compact one-line-per-event table: timestamp | source | event_type | title."""
+    """Multi-line block per recent event: header + highlight + prior predictions + outcomes."""
     if not events:
         return "(no recent events in window)"
-    lines = ["WHEN | SOURCE | TYPE | TITLE"]
+    blocks: list[str] = []
     for e in events:
-        lines.append(
-            f"{e.published_at.date().isoformat()} | {e.source} | {e.event_type} | {e.title}"
-        )
-    return "\n".join(lines)
+        lines = [
+            f"[{e.published_at.date().isoformat()} | {e.source} | {e.event_type}] {e.title}"
+        ]
+        highlight = _recent_event_highlight(e)
+        if highlight:
+            lines.append(f"  {highlight}")
+        if getattr(e, "prior_predictions", None):
+            lines.append("  prior EventSense predictions:")
+            for p in e.prior_predictions:
+                lines.append(_render_prior_prediction(p))
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
 
 
 def _render_attached_documents(docs: list[Any]) -> str:

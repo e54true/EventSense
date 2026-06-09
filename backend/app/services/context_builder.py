@@ -11,12 +11,24 @@ tables (token-efficient — full payloads would balloon the prompt).
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Any
 
 import structlog
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from app.db.models import DocumentKind, Event, EventDocument, Indicator
+from app.db.models import (
+    DocumentKind,
+    Event,
+    EventDocument,
+    Indicator,
+    OutcomeWindow,
+    Prediction,
+    PredictionDirection,
+    PredictionKind,
+    PredictionMagnitude,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -44,13 +56,46 @@ class IndicatorSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class PriorOutcome:
+    """One validated outcome of a prior prediction. Only outcomes whose
+    validated_at <= triggering_event.published_at are included (leak prevention)."""
+
+    window: OutcomeWindow
+    ticker_return: float
+    spy_return: float
+    excess_return: float
+    aligned: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PriorPrediction:
+    """One past prediction the analyzer made on a prior event."""
+
+    ticker: str
+    kind: PredictionKind
+    direction: PredictionDirection
+    magnitude: PredictionMagnitude
+    confidence: float
+    reasoning: str
+    prompt_version: str
+    outcomes: list[PriorOutcome]
+
+
+@dataclass(frozen=True, slots=True)
 class RecentEventSummary:
-    """Compact representation of a past event for the v2 prompt table."""
+    """Compact representation of a past event for the v2 prompt table.
+
+    Carries through the full payload (so renderer can pull a per-source
+    highlight line) plus any prior predictions + already-validated outcomes
+    (so the LLM can see its own track record without prescribed self-calibration).
+    """
 
     published_at: datetime
     source: str
     event_type: str
     title: str
+    payload: dict[str, Any]
+    prior_predictions: list[PriorPrediction]
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,33 +125,72 @@ async def _recent_events(
     lookback_days: int,
     cap: int,
 ) -> list[RecentEventSummary]:
-    """Past N days of events, newest-first, capped, excluding the triggering one."""
+    """Past N days of events, newest-first, capped, excluding the triggering one.
+
+    The window is [triggering_event.published_at - N days, triggering_event.published_at]
+    — anchored on the EVENT, not on now(). This avoids data leakage when
+    re-analyzing historical backfill: the prompt must only see things known
+    AT THE TIME of the triggering event, never anything after.
+
+    Each event's predictions are eager-loaded along with their outcomes.
+    Outcomes are filtered in Python (not SQL) by validated_at — only those
+    validated AT-OR-BEFORE the triggering event are kept; later validations
+    would leak future information into the prompt.
+    """
     cutoff = triggering_event.published_at - timedelta(days=lookback_days)
-    stmt = (
-        select(
-            Event.published_at,
-            Event.source,
-            Event.event_type,
-            Event.title,
+    rows = (
+        await db.scalars(
+            select(Event)
+            .where(
+                Event.published_at >= cutoff,
+                Event.published_at <= triggering_event.published_at,
+                Event.id != triggering_event.id,
+            )
+            .options(selectinload(Event.predictions).selectinload(Prediction.outcomes))
+            .order_by(Event.published_at.desc())
+            .limit(cap)
         )
-        .where(
-            Event.published_at >= cutoff,
-            Event.published_at <= triggering_event.published_at,
-            Event.id != triggering_event.id,
+    ).all()
+
+    summaries: list[RecentEventSummary] = []
+    for event in rows:
+        prior_predictions: list[PriorPrediction] = []
+        for p in event.predictions:
+            outcomes = [
+                PriorOutcome(
+                    window=o.window,
+                    ticker_return=o.ticker_return,
+                    spy_return=o.spy_return,
+                    excess_return=o.excess_return,
+                    aligned=o.aligned,
+                )
+                for o in p.outcomes
+                if o.validated_at <= triggering_event.published_at
+            ]
+            prior_predictions.append(
+                PriorPrediction(
+                    ticker=p.ticker,
+                    kind=p.kind,
+                    direction=p.direction,
+                    magnitude=p.magnitude,
+                    confidence=p.confidence,
+                    reasoning=p.reasoning,
+                    prompt_version=p.prompt_version,
+                    outcomes=outcomes,
+                )
+            )
+
+        summaries.append(
+            RecentEventSummary(
+                published_at=event.published_at,
+                source=str(event.source.value),
+                event_type=event.event_type,
+                title=event.title,
+                payload=event.payload or {},
+                prior_predictions=prior_predictions,
+            )
         )
-        .order_by(Event.published_at.desc())
-        .limit(cap)
-    )
-    rows = (await db.execute(stmt)).all()
-    return [
-        RecentEventSummary(
-            published_at=r.published_at,
-            source=str(r.source.value if hasattr(r.source, "value") else r.source),
-            event_type=r.event_type,
-            title=r.title,
-        )
-        for r in rows
-    ]
+    return summaries
 
 
 async def _latest_indicator_snapshot(

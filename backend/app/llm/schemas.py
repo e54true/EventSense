@@ -37,8 +37,10 @@ class TickerImpact(BaseModel):
     magnitude: Literal["LOW", "MEDIUM", "HIGH"]
     # Confidence about direction, not magnitude. 0.5 = coin flip.
     confidence: float = Field(ge=0.0, le=1.0)
-    # One sentence — anything longer wastes tokens without adding signal.
-    reasoning: str = Field(min_length=1, max_length=500)
+    # 3-5 sentences explaining THIS ticker's specific reasoning (not a repeat
+    # of the EventAnalysis-level summary). The cap is generous because v3.2
+    # asks the LLM to cover mechanism + confidence rationale + counter-thesis.
+    reasoning: str = Field(min_length=1, max_length=2000)
 
 
 class EventAnalysis(BaseModel):
@@ -46,8 +48,11 @@ class EventAnalysis(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    # Short headline-style summary of the event itself (for /events/{id} display).
-    summary: str = Field(min_length=1, max_length=200)
+    # Overall thesis paragraph displayed prominently on the website for human
+    # review — covers what happened, key context, historical regime anchor,
+    # net bias, and the biggest uncertainty. v3.2 expanded from 200 → 800 to
+    # accommodate the structured walkthrough the prompt asks for.
+    summary: str = Field(min_length=1, max_length=800)
     # Per-ticker impacts. Empty list is valid — means "this event affects nothing
     # on our watchlist meaningfully" (e.g. a random 8-K with item 8.01 boilerplate).
     impacts: list[TickerImpact] = Field(default_factory=list)
