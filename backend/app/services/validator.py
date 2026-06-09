@@ -102,7 +102,15 @@ async def _candidate_pairs(
         now() >= predicted_at + window_duration + price_availability_buffer
     A pair is "not yet outcome'd" when the corresponding row in
     prediction_outcomes doesn't exist.
+
+    Window allocation: budget is split EVENLY across the three windows
+    (~limit/3 each). Previous behavior selected windows in-order up to
+    `limit`, which caused H1 candidates — systematically unfillable
+    against daily-resolution price snapshots when predicted_at is at
+    00:00 UTC — to starve H24/D7 entirely. Now H24 and D7 always get
+    fair share of the batch even if H1 is permanently deferred.
     """
+    per_window = max(1, limit // len(_WINDOW_DURATIONS))
     pairs: list[tuple[Prediction, OutcomeWindow]] = []
     for window, duration in _WINDOW_DURATIONS.items():
         cutoff = now - duration - _PRICE_AVAILABILITY_BUFFER
@@ -118,15 +126,12 @@ async def _candidate_pairs(
                 .where(Prediction.predicted_at <= cutoff)
                 .where(no_outcome_yet)
                 .order_by(Prediction.predicted_at.asc())
-                .limit(limit)
+                .limit(per_window)
             )
         ).all()
         for p in rows:
             pairs.append((p, window))
-        # Stop accumulating once we have enough — keep batches bounded.
-        if len(pairs) >= limit:
-            return pairs[:limit]
-    return pairs
+    return pairs[:limit]
 
 
 async def _build_outcome(
