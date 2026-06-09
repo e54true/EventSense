@@ -110,6 +110,11 @@ async def _candidate_pairs(
     00:00 UTC — to starve H24/D7 entirely. Now H24 and D7 always get
     fair share of the batch even if H1 is permanently deferred.
     """
+    # Order: newest-first. The previous ASC order made validator grind on
+    # historical backfill (2023-2024 GDP releases) whose baseline price
+    # window predates price_snapshots's 1-year history → infinite defer +
+    # never reach recent events that have all required prices. DESC means
+    # the backlog drains starting from data we actually have.
     per_window = max(1, limit // len(_WINDOW_DURATIONS))
     pairs: list[tuple[Prediction, OutcomeWindow]] = []
     for window, duration in _WINDOW_DURATIONS.items():
@@ -125,7 +130,7 @@ async def _candidate_pairs(
                 select(Prediction)
                 .where(Prediction.predicted_at <= cutoff)
                 .where(no_outcome_yet)
-                .order_by(Prediction.predicted_at.asc())
+                .order_by(Prediction.predicted_at.desc())
                 .limit(per_window)
             )
         ).all()
