@@ -34,7 +34,12 @@ from app.schemas.raw_event import RawEvent
 logger = structlog.get_logger(__name__)
 
 SEC_BASE = "https://data.sec.gov"
-LOOKBACK_DAYS = 14  # only emit filings from the last 2 weeks
+# 60-day window — generous enough to backfill 8-Ks missed during a deploy
+# gap (initial production rollout missed AMZN/NVDA/AAPL/TSLA filings from
+# late-April through mid-May). (source, external_id) dedup means a wider
+# window just no-ops on already-ingested rows, so the cost of bumping up
+# is essentially zero.
+LOOKBACK_DAYS = 60
 
 # Sleep between per-ticker requests so we stay well below 10 req/sec.
 # 0.15s = ~6 req/sec, safely under the limit even with TCP overhead jitter.
