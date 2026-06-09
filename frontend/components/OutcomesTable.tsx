@@ -1,20 +1,24 @@
 // Renders the 1h / 24h / 7d outcomes for one prediction.
 //
 // Three slots fixed in column order so users can scan rows of predictions
-// and see the same time horizons line up. Empty slot = "not validated yet"
-// (window hasn't elapsed or price data not available).
+// and see the same time horizons line up. Three possible row states:
 //
-// Post-alignment-refactor (faeb2d6): we no longer show SPY / Excess columns.
-// `aligned` now reflects whether the ticker itself moved in the predicted
-// direction beyond NEUTRAL_THRESHOLD — the SPY-relative comparison was
-// confusing and misleading on the dashboard. The backend still computes
-// excess_return for analytics, just doesn't surface it in the per-prediction
-// table.
+//   1. filled — outcome row exists, show return + aligned tick
+//   2. maturing — window hasn't elapsed yet from predicted_at, show "Xh left"
+//   3. unavailable — window matured but validator couldn't fill (most often:
+//      1h tolerance can't reach the nearest daily price snapshot for events
+//      whose predicted_at is at 00:00 UTC). Communicates "structural miss"
+//      rather than implying the value is still coming.
 
 import type { OutcomeRead, OutcomeWindow } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const WINDOWS: OutcomeWindow[] = ["1h", "24h", "7d"];
+const WINDOW_DURATION_HOURS: Record<OutcomeWindow, number> = {
+  "1h": 1,
+  "24h": 24,
+  "7d": 7 * 24,
+};
 
 function formatPct(v: number): string {
   const sign = v > 0 ? "+" : "";
@@ -27,7 +31,39 @@ function returnColor(v: number): string {
   return "text-slate-500";
 }
 
-export function OutcomesTable({ outcomes }: { outcomes: OutcomeRead[] }) {
+function formatTimeLeft(hours: number): string {
+  if (hours < 24) return `${Math.ceil(hours)}h left`;
+  return `${Math.ceil(hours / 24)}d left`;
+}
+
+type RowState =
+  | { kind: "filled"; outcome: OutcomeRead }
+  | { kind: "maturing"; hoursLeft: number }
+  | { kind: "unavailable" };
+
+function rowStateFor(
+  window: OutcomeWindow,
+  predictedAt: string,
+  outcome: OutcomeRead | undefined,
+): RowState {
+  if (outcome) return { kind: "filled", outcome };
+  const maturesMs =
+    new Date(predictedAt).getTime() +
+    WINDOW_DURATION_HOURS[window] * 3600_000;
+  const nowMs = Date.now();
+  if (maturesMs > nowMs) {
+    return { kind: "maturing", hoursLeft: (maturesMs - nowMs) / 3600_000 };
+  }
+  return { kind: "unavailable" };
+}
+
+export function OutcomesTable({
+  outcomes,
+  predictedAt,
+}: {
+  outcomes: OutcomeRead[];
+  predictedAt: string;
+}) {
   const byWindow = new Map(outcomes.map((o) => [o.window, o]));
 
   return (
@@ -35,44 +71,63 @@ export function OutcomesTable({ outcomes }: { outcomes: OutcomeRead[] }) {
       <table className="w-full text-xs">
         <thead className="bg-slate-100/80">
           <tr className="text-left text-[10px] uppercase tracking-wider text-slate-500">
-            <th className="px-3 py-2 font-medium">Window</th>
+            <th className="px-3 py-2 font-medium w-20">Window</th>
             <th className="px-3 py-2 font-medium text-right">Ticker return</th>
-            <th className="px-3 py-2 font-medium text-center">Aligned</th>
+            <th className="px-3 py-2 font-medium text-center w-24">Aligned</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-200/80">
           {WINDOWS.map((w) => {
-            const o = byWindow.get(w);
-            if (!o) {
-              return (
-                <tr key={w} className="text-slate-400">
-                  <td className="px-3 py-2 font-mono font-semibold">{w}</td>
-                  <td colSpan={2} className="px-3 py-2 italic">
-                    pending validation
-                  </td>
-                </tr>
-              );
-            }
+            const state = rowStateFor(w, predictedAt, byWindow.get(w));
             return (
-              <tr key={w} className="text-slate-700">
-                <td className="px-3 py-2 font-mono font-semibold text-slate-900">
+              <tr key={w}>
+                <td className="px-3 py-2 font-mono font-semibold text-slate-900 w-20">
                   {w}
                 </td>
-                <td
-                  className={cn(
-                    "px-3 py-2 text-right tabular-nums font-semibold",
-                    returnColor(o.ticker_return),
-                  )}
-                >
-                  {formatPct(o.ticker_return)}
-                </td>
-                <td className="px-3 py-2 text-center">
-                  {o.aligned ? (
-                    <span className="text-green-600 font-bold">✓</span>
-                  ) : (
-                    <span className="text-rose-500 font-bold">✗</span>
-                  )}
-                </td>
+                {state.kind === "filled" ? (
+                  <>
+                    <td
+                      className={cn(
+                        "px-3 py-2 text-right tabular-nums font-semibold",
+                        returnColor(state.outcome.ticker_return),
+                      )}
+                    >
+                      {formatPct(state.outcome.ticker_return)}
+                    </td>
+                    <td className="px-3 py-2 text-center w-24">
+                      {state.outcome.aligned ? (
+                        <span className="text-green-600 font-bold">✓</span>
+                      ) : (
+                        <span className="text-rose-500 font-bold">✗</span>
+                      )}
+                    </td>
+                  </>
+                ) : state.kind === "maturing" ? (
+                  <>
+                    <td className="px-3 py-2 text-right text-slate-400 italic tabular-nums">
+                      maturing · {formatTimeLeft(state.hoursLeft)}
+                    </td>
+                    <td className="px-3 py-2 text-center text-slate-300 w-24">
+                      —
+                    </td>
+                  </>
+                ) : (
+                  <>
+                    <td
+                      className="px-3 py-2 text-right text-slate-400 italic"
+                      title={
+                        w === "1h"
+                          ? "1h window can't be filled when only daily price snapshots are available — needs intraday data captured around predicted_at"
+                          : "window matured but the validator couldn't find prices within tolerance"
+                      }
+                    >
+                      no data
+                    </td>
+                    <td className="px-3 py-2 text-center text-slate-300 w-24">
+                      —
+                    </td>
+                  </>
+                )}
               </tr>
             );
           })}

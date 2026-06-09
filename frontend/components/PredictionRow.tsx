@@ -70,9 +70,9 @@ export function PredictionRow({ prediction }: Props) {
         )}
       </div>
 
-      {outcomes !== null && outcomes.length > 0 && (
+      {outcomes !== null && (
         <div className="mt-3">
-          <OutcomesTable outcomes={outcomes} />
+          <OutcomesTable outcomes={outcomes} predictedAt={prediction.predicted_at} />
         </div>
       )}
     </div>
