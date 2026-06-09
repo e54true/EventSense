@@ -10,7 +10,9 @@ import { format, formatDistanceToNow } from "date-fns";
 import { api } from "@/lib/api";
 import { EventDetailResponse, PredictionWithOutcomes } from "@/lib/types";
 import { AttachedDocumentsPanel } from "@/components/AttachedDocumentsPanel";
+import { LLMSummaryPanel } from "@/components/LLMSummaryPanel";
 import { MacroContextPanel } from "@/components/MacroContextPanel";
+import { PredictionLegend } from "@/components/PredictionLegend";
 import { PredictionRow } from "@/components/PredictionRow";
 import { PriceChart } from "@/components/PriceChart";
 import { RecentEventsTimeline } from "@/components/RecentEventsTimeline";
@@ -117,6 +119,8 @@ export function EventDetailClient({ id }: { id: string }) {
         <SourceLinks payload={event.payload} />
       </header>
 
+      <LLMSummaryPanel summary={event.llm_summary} />
+
       {predictions.length > 0 && (
         <section className="space-y-3">
           <h2 className="text-sm font-semibold text-slate-900 uppercase tracking-wide">
@@ -141,6 +145,9 @@ export function EventDetailClient({ id }: { id: string }) {
           predictions={predictions}
           totalCost={totalCost}
         />
+        <div className="mb-3">
+          <PredictionLegend />
+        </div>
         {predictions.length === 0 ? (
           <div className="rounded-xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-600">
             No predictions yet — the analyzer worker runs every minute, so a

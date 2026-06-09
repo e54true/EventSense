@@ -126,6 +126,10 @@ class Event(Base, TimestampMixin):
         default=EventStatus.FETCHED,
     )
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Phase A6: the v2 analyzer's thesis paragraph (EventAnalysis.summary).
+    # Populated when the LLM successfully produces an EventAnalysis; stays NULL
+    # for events analyzed before this column existed.
+    llm_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # ondelete=CASCADE on the child side; lazy loading suppressed for async safety.
     predictions: Mapped[list["Prediction"]] = relationship(

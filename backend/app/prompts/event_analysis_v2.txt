@@ -53,12 +53,13 @@ TASKS
    (a) WHAT HAPPENED — the triggering event's core fact + key number.
    (b) KEY CONTEXT — cite 1-2 specific indicator values
        (e.g. "10Y at 4.55% (+25bps over 30d), P/E at 31.83 stretched").
-   (c) HISTORICAL REGIME COMPARISON — anchor to a specific past period
-       you recall having similar conditions, and what markets did then
-       (e.g. "Resembles late 2018 with elevated rates + stretched
-       multiples, where similar earnings beats often produced
-       sell-the-news"; or "Comparable to early-2024 Fed pause regime
-       where macro prints near consensus had muted impact").
+   (c) HISTORICAL REGIME COMPARISON — **MANDATORY**. Anchor to ONE
+       specific past period you recall having similar conditions
+       (cite the period explicitly, e.g. "late 2018Q4" or "2020
+       reopening Q3" or "early-2024 Fed pause"), and state what
+       markets did then. If you cannot identify a historical analogue
+       from your training data, say so explicitly and explain why
+       the current regime is novel. Do NOT skip this step.
    (d) OVERALL BIAS — market direction + company direction (if any) +
        a brief note on why this confidence level is appropriate.
    (e) BIGGEST UNCERTAINTY — what indicator or follow-up event would
@@ -101,13 +102,15 @@ TASKS
 GUIDELINES
 ═══════════════════════════════════════════════════════════════
 
-▶ HISTORICAL REGIME ANCHORING
-  Use your pretraining knowledge of market history. Compare the current
-  indicator state (yield levels + curve shape + P/E + Fed cycle stage)
-  to a specific past period you recognize, and reference what markets
-  did then. Every summary should anchor to at least one such historical
-  reference. Per-impact reasoning may also reference it if it changes
-  the per-ticker call.
+▶ HISTORICAL REGIME ANCHORING (MANDATORY)
+  Every summary MUST cite at least one specific historical period
+  (e.g. "Q4 2018", "March 2020 covid drawdown", "2022 inflation peak",
+  "early-2024 Fed pause") and describe what markets did then under
+  similar conditions. This is non-negotiable — the user is reviewing
+  these analyses for actionable structure, and a thesis without a
+  historical anchor offers no comparative frame. If you genuinely
+  cannot find an analogue, say "no clear historical parallel — current
+  regime is unprecedented because..." and explain.
 
 ▶ INDICATOR DIRECTIONALITY
   - Yields ↑ + P/E ↑ → typically risk-on, growth bid

@@ -50,7 +50,16 @@ def test_cpi_release_is_high_stakes() -> None:
     assert choice.model == "gpt-4o"
 
 
-def test_earnings_is_not_high_stakes_by_default() -> None:
-    """Earnings reports get the default model — common enough that premium would burn budget."""
+def test_earnings_uses_premium_model_under_budget() -> None:
+    """Phase A6: earnings ships with Phase A fundamentals + SEC EX-99.1 body
+    attached — rich enough payload that gpt-4o-mini was skipping the v3.2
+    prompt's mandatory historical-anchor structure. Promote to gpt-4o."""
     choice = choose_model(EventSource.EARNINGS, "EARNINGS_REPORT", today_spend_usd=0.0)
+    assert choice.model == "gpt-4o"
+
+
+def test_8k_filing_remains_default_model() -> None:
+    """8-K is still high-volume / variable-importance; mini handles structured
+    item-code filings well enough."""
+    choice = choose_model(EventSource.SEC_EDGAR, "8K_FILING", today_spend_usd=0.0)
     assert choice.model == "gpt-4o-mini"

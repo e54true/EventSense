@@ -23,6 +23,7 @@ class EventRead(BaseModel):
     fetched_at: datetime
     status: EventStatus
     failure_reason: str | None
+    llm_summary: str | None = None
     created_at: datetime
     updated_at: datetime
 

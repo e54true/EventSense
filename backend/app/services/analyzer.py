@@ -100,6 +100,8 @@ async def _process_one(db: AsyncSession, event: Event, spend_today: float) -> in
     db.add_all(predictions)
     event.status = EventStatus.ANALYZED
     event.failure_reason = None
+    # Persist the v2 thesis paragraph so the frontend can show it for human review.
+    event.llm_summary = result.analysis.summary
 
     log.info(
         "analyzer.event_done",

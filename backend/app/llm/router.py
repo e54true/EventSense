@@ -46,6 +46,12 @@ _HIGH_STAKES_EVENT_TYPES: frozenset[tuple[EventSource, str]] = frozenset(
         # Phase 1 migration backfills them to CPI_RELEASE but keep the alias
         # in case of a rolling deploy ordering quirk.
         (EventSource.FRED, "ECONOMIC_RELEASE"),
+        # Earnings ships with rich payload (Phase A fundamentals + SEC linkage
+        # + EX-99.1 press release via attached docs). gpt-4o-mini routinely
+        # ignored the v3.2 prompt's "MUST anchor to historical period"
+        # requirement; gpt-4o reliably follows that structure. ~7 earnings/
+        # quarter x 4 quarters/yr x $0.03/call ~ $1/year — easy upgrade.
+        (EventSource.EARNINGS, "EARNINGS_REPORT"),
     }
 )
 

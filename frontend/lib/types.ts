@@ -27,6 +27,7 @@ export interface EventRead {
   fetched_at: string;
   status: EventStatus;
   failure_reason: string | null;
+  llm_summary: string | null;
   created_at: string;
   updated_at: string;
 }
