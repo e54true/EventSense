@@ -63,22 +63,17 @@ export function PredictionLegend() {
           the prediction window elapses, the validator computes:
           <ul className="list-disc list-inside mt-1 space-y-1 text-slate-600">
             <li>
-              <span className="font-mono">TICKER</span>: actual % move of the
-              predicted ticker over the window
-            </li>
-            <li>
-              <span className="font-mono">SPY</span>: actual % move of S&amp;P
-              500 baseline over the same window
-            </li>
-            <li>
-              <span className="font-mono">EXCESS</span>: ticker − SPY
-              (alpha). Positive = outperformed market, negative = lagged.
+              <span className="font-mono">TICKER RETURN</span>: actual % move
+              of the predicted ticker over the window.
             </li>
             <li>
               <span className="font-mono">ALIGNED ✓ / ✗</span>:
-              did the sign match? For COMPANY predictions we compare EXCESS;
-              for MARKET predictions we compare TICKER directly (SPY-vs-SPY
-              would always be 0 excess).
+              did the actual move match the prediction?
+              <ul className="list-disc list-inside ml-4 mt-1 text-slate-500">
+                <li>BULLISH ✓ when return &gt; +0.5%</li>
+                <li>BEARISH ✓ when return &lt; −0.5%</li>
+                <li>NEUTRAL ✓ when |return| &lt; 0.5%</li>
+              </ul>
             </li>
           </ul>
         </div>

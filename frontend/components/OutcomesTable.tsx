@@ -3,6 +3,13 @@
 // Three slots fixed in column order so users can scan rows of predictions
 // and see the same time horizons line up. Empty slot = "not validated yet"
 // (window hasn't elapsed or price data not available).
+//
+// Post-alignment-refactor (faeb2d6): we no longer show SPY / Excess columns.
+// `aligned` now reflects whether the ticker itself moved in the predicted
+// direction beyond NEUTRAL_THRESHOLD — the SPY-relative comparison was
+// confusing and misleading on the dashboard. The backend still computes
+// excess_return for analytics, just doesn't surface it in the per-prediction
+// table.
 
 import type { OutcomeRead, OutcomeWindow } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -29,9 +36,7 @@ export function OutcomesTable({ outcomes }: { outcomes: OutcomeRead[] }) {
         <thead className="bg-slate-100/80">
           <tr className="text-left text-[10px] uppercase tracking-wider text-slate-500">
             <th className="px-3 py-2 font-medium">Window</th>
-            <th className="px-3 py-2 font-medium text-right">Ticker</th>
-            <th className="px-3 py-2 font-medium text-right">SPY</th>
-            <th className="px-3 py-2 font-medium text-right">Excess</th>
+            <th className="px-3 py-2 font-medium text-right">Ticker return</th>
             <th className="px-3 py-2 font-medium text-center">Aligned</th>
           </tr>
         </thead>
@@ -42,7 +47,7 @@ export function OutcomesTable({ outcomes }: { outcomes: OutcomeRead[] }) {
               return (
                 <tr key={w} className="text-slate-400">
                   <td className="px-3 py-2 font-mono font-semibold">{w}</td>
-                  <td colSpan={4} className="px-3 py-2 italic">
+                  <td colSpan={2} className="px-3 py-2 italic">
                     pending validation
                   </td>
                 </tr>
@@ -55,27 +60,11 @@ export function OutcomesTable({ outcomes }: { outcomes: OutcomeRead[] }) {
                 </td>
                 <td
                   className={cn(
-                    "px-3 py-2 text-right tabular-nums",
+                    "px-3 py-2 text-right tabular-nums font-semibold",
                     returnColor(o.ticker_return),
                   )}
                 >
                   {formatPct(o.ticker_return)}
-                </td>
-                <td
-                  className={cn(
-                    "px-3 py-2 text-right tabular-nums",
-                    returnColor(o.spy_return),
-                  )}
-                >
-                  {formatPct(o.spy_return)}
-                </td>
-                <td
-                  className={cn(
-                    "px-3 py-2 text-right tabular-nums font-semibold",
-                    returnColor(o.excess_return),
-                  )}
-                >
-                  {formatPct(o.excess_return)}
                 </td>
                 <td className="px-3 py-2 text-center">
                   {o.aligned ? (
