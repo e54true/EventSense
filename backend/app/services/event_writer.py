@@ -59,13 +59,17 @@ async def persist_events(db: AsyncSession, raw_events: list[RawEvent]) -> int:
             fetched_at=now,
             status=EventStatus.FETCHED,
         )
-        db.add(event)
+        # Savepoint per event: a unique-constraint collision must only undo
+        # THIS insert. A session-level rollback() here would also discard every
+        # previously-flushed-but-uncommitted event in the batch while the
+        # `inserted` counter kept counting them — silent data loss.
         try:
-            await db.flush()
+            async with db.begin_nested():
+                db.add(event)
+                await db.flush()
         except IntegrityError:
             # Race: another worker inserted the same (source, external_id) between
             # our SELECT and flush. Unique constraint did its job — move on.
-            await db.rollback()
             continue
         inserted += 1
 

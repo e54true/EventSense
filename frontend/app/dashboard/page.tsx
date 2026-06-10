@@ -37,7 +37,11 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-8">
-      <HeroSection rate={overall.data?.alignment_rate} total={overall.data?.total_outcomes} />
+      <HeroSection
+        rate={overall.data?.alignment_rate}
+        total={overall.data?.total_outcomes}
+        baselines={overall.data?.baselines}
+      />
 
       <MacroContextPanel
         title="Current macro state"
@@ -94,14 +98,22 @@ function SectionHeading({ title, hint }: { title: string; hint?: string }) {
 function HeroSection({
   rate,
   total,
+  baselines,
 }: {
   rate: number | null | undefined;
   total: number | undefined;
+  baselines?: {
+    always_bullish: number | null;
+    always_bearish: number | null;
+    always_neutral: number | null;
+  };
 }) {
   const pct =
     rate === null || rate === undefined
       ? null
       : (rate * 100).toFixed(1);
+  const fmtBaseline = (v: number | null | undefined) =>
+    v === null || v === undefined ? "—" : `${(v * 100).toFixed(0)}%`;
   return (
     <section className="border border-term-border border-l-2 border-l-term-amber bg-term-panel p-6">
       <p className="font-mono text-[10px] font-bold uppercase tracking-[0.3em] text-term-amber">
@@ -117,6 +129,13 @@ function HeroSection({
             : "NO VALIDATED PREDICTIONS YET"}
         </span>
       </div>
+      {baselines && total !== undefined && total > 0 && (
+        <p className="mt-2 font-mono text-[11px] text-term-dim tabular-nums">
+          BASELINES — ALWAYS-BULLISH {fmtBaseline(baselines.always_bullish)} ·
+          ALWAYS-BEARISH {fmtBaseline(baselines.always_bearish)} ·
+          ALWAYS-NEUTRAL {fmtBaseline(baselines.always_neutral)}
+        </p>
+      )}
       <p className="mt-3 text-sm text-term-muted max-w-2xl leading-relaxed">
         Predictions are aligned when the sign of{" "}
         <code className="font-mono text-term-text/80">excess_return</code>{" "}

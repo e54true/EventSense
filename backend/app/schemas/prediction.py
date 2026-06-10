@@ -17,6 +17,8 @@ class PredictionRead(BaseModel):
     ticker: str
     kind: PredictionKind
     direction: PredictionDirection
+    # v3+: separate 7-day call; None for predictions made under older prompts.
+    direction_7d: PredictionDirection | None = None
     magnitude: PredictionMagnitude
     confidence: float
     reasoning: str

@@ -186,7 +186,13 @@ async def _build_outcome(
     # excess is still computed + stored for analytics, but aligned now uses
     # raw_return for both MARKET and COMPANY (see alignment.py docstring).
     excess = alignment.excess_return(ticker_ret, spy_ret)
-    aligned = alignment.is_aligned(prediction.direction, ticker_ret)
+    # Per-window direction: v3 predictions carry a separate 7d call. Legacy
+    # rows (direction_7d NULL) fall back to the single 24h direction.
+    if window == OutcomeWindow.D7 and prediction.direction_7d is not None:
+        direction = prediction.direction_7d
+    else:
+        direction = prediction.direction
+    aligned = alignment.is_aligned(direction, ticker_ret, window)
 
     return PredictionOutcome(
         prediction_id=prediction.id,

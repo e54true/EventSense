@@ -33,9 +33,15 @@ class TickerImpact(BaseModel):
     # Default COMPANY for v1 prompt back-compat; v2 prompt instructs the LLM
     # to set it explicitly.
     kind: Literal["MARKET", "COMPANY"] = "COMPANY"
+    # 24h call. The v3 prompt scores this against the raw 24h return.
     direction: Literal["BULLISH", "BEARISH", "NEUTRAL"]
+    # Separate 7-day call (v3+). The 24h impulse and week-out drift can
+    # legitimately differ. None = older prompt versions that didn't ask.
+    direction_7d: Literal["BULLISH", "BEARISH", "NEUTRAL"] | None = None
     magnitude: Literal["LOW", "MEDIUM", "HIGH"]
-    # Confidence about direction, not magnitude. 0.5 = coin flip.
+    # Confidence about direction, not magnitude. 0.5 = coin flip; values
+    # below 0.5 are clamped conceptually meaningless — the prompt anchors
+    # the scale at [0.5, 1.0].
     confidence: float = Field(ge=0.0, le=1.0)
     # 3-5 sentences explaining THIS ticker's specific reasoning (not a repeat
     # of the EventAnalysis-level summary). The cap is generous because v3.2

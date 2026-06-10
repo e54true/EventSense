@@ -38,6 +38,12 @@ export function PredictionRow({ prediction }: Props) {
         </span>
         <KindBadge kind={prediction.kind} />
         <DirectionBadge direction={prediction.direction} />
+        {prediction.direction_7d && prediction.direction_7d !== prediction.direction && (
+          <span className="inline-flex items-center gap-1 font-mono text-[10px] text-term-dim">
+            7D
+            <DirectionBadge direction={prediction.direction_7d} />
+          </span>
+        )}
         <span
           className={cn(
             "font-mono text-[10px] uppercase tracking-widest",

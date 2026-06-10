@@ -38,6 +38,8 @@ export interface PredictionRead {
   ticker: string;
   kind: PredictionKind;
   direction: PredictionDirection;
+  // v3+: separate 7-day call; null for predictions made under older prompts.
+  direction_7d: PredictionDirection | null;
   magnitude: PredictionMagnitude;
   confidence: number;
   reasoning: string;
@@ -134,10 +136,24 @@ export interface IndicatorsLatestResponse {
   indicators: IndicatorSnapshotRead[];
 }
 
+export interface CalibrationBucket {
+  bucket: string;
+  total: number;
+  aligned: number;
+  alignment_rate: number | null;
+}
+
 export interface AccuracyResponse {
   total_outcomes: number;
   aligned_count: number;
   alignment_rate: number | null;
+  // Constant-strategy comparison over the same filtered outcome set.
+  baselines: {
+    always_bullish: number | null;
+    always_bearish: number | null;
+    always_neutral: number | null;
+  };
+  calibration: CalibrationBucket[];
   filters: {
     source: EventSource | null;
     ticker: string | null;

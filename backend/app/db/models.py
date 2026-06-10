@@ -183,6 +183,14 @@ class Prediction(Base, TimestampMixin):
         Enum(PredictionDirection, name="prediction_direction"),
         nullable=False,
     )
+    # v3 prompt: separate 7-day call. The 24h impulse and the week-out drift
+    # can legitimately differ (e.g. earnings pop that fades). NULL = legacy
+    # prediction made before the column existed; the validator falls back to
+    # `direction` for the 7d window in that case.
+    direction_7d: Mapped[PredictionDirection | None] = mapped_column(
+        Enum(PredictionDirection, name="prediction_direction"),
+        nullable=True,
+    )
     magnitude: Mapped[PredictionMagnitude] = mapped_column(
         Enum(PredictionMagnitude, name="prediction_magnitude"),
         nullable=False,

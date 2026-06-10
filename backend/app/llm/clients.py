@@ -85,7 +85,10 @@ async def analyze_event(
             model=choice.model,
             response_model=EventAnalysis,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=1024,  # anthropic SDK requires explicit max_tokens
+            # Anthropic SDK requires explicit max_tokens. The schema allows an
+            # 800-char summary + several impacts with up-to-2000-char reasoning
+            # each — 1024 guaranteed truncation + instructor retry loops.
+            max_tokens=4096,
             max_retries=2,
         )
         usage = raw.usage
@@ -152,6 +155,61 @@ def build_prompt_v2(ctx: "AnalyzerContext") -> str:  # noqa: F821 — forward re
     )
 
 
+def build_prompt_v3(ctx: "AnalyzerContext") -> str:  # noqa: F821 — forward ref
+    """Render the v3 prompt — v2 plus market state, self track record,
+    per-window directions, and explicit scoring rules."""
+    import json as _json
+    from pathlib import Path
+
+    template_path = Path(__file__).parent.parent / "prompts" / "event_analysis_v3.txt"
+    template = template_path.read_text(encoding="utf-8")
+    return template.format(
+        lookback_days=ctx.lookback_days,
+        event_json=_json.dumps(ctx.triggering_event.payload, indent=2, default=str),
+        indicators_table=_render_indicators_table(ctx.latest_indicators),
+        market_state_table=_render_market_state_table(ctx.market_state),
+        track_record_table=_render_track_record_table(ctx.track_record),
+        recent_events_table=_render_recent_events_table(ctx.recent_events),
+        attached_documents=_render_attached_documents(ctx.attached_documents),
+        watchlist_csv=", ".join(ctx.watchlist),
+    )
+
+
+def _fmt_pct(value: float | None) -> str:
+    return f"{value:+.2%}" if value is not None else "n/a"
+
+
+def _render_market_state_table(rows: list[Any]) -> str:
+    """One line per ticker: trailing returns + annualized 20d realized vol."""
+    if not rows:
+        return "(no price history available)"
+    lines = ["TICKER | 1D | 5D | 20D | 20D VOL (ann.)"]
+    for r in rows:
+        vol = f"{r.vol_20d_annualized:.1%}" if r.vol_20d_annualized is not None else "n/a"
+        lines.append(
+            f"{r.ticker} | {_fmt_pct(r.return_1d)} | {_fmt_pct(r.return_5d)} | "
+            f"{_fmt_pct(r.return_20d)} | {vol}"
+        )
+    return "\n".join(lines)
+
+
+def _render_track_record_table(rows: list[Any]) -> str:
+    """Aggregate hit rates per (window, kind, direction). Small-n noted."""
+    if not rows:
+        return "(no validated history yet — calibrate from base rates alone)"
+    lines = ["WINDOW | KIND | DIRECTION | ALIGNED/TOTAL | RATE"]
+    for r in rows:
+        window = r.window.value if hasattr(r.window, "value") else str(r.window)
+        kind = r.kind.value if hasattr(r.kind, "value") else str(r.kind)
+        direction = r.direction.value if hasattr(r.direction, "value") else str(r.direction)
+        rate = f"{r.aligned / r.total:.0%}" if r.total else "n/a"
+        note = " (small n)" if r.total < 5 else ""
+        lines.append(
+            f"{window} | {kind} | {direction} | {r.aligned}/{r.total} | {rate}{note}"
+        )
+    return "\n".join(lines)
+
+
 def _render_indicators_table(snapshots: dict[str, Any]) -> str:
     """Compact one-line-per-indicator table: KEY | value | (Δ30d sign value)."""
     if not snapshots:
@@ -184,15 +242,19 @@ def _recent_event_highlight(event: Any) -> str:
     p = event.payload if isinstance(event.payload, dict) else {}
     et = event.event_type
 
-    if et == "CPI_RELEASE":
+    if et in ("CPI_RELEASE", "NFP_RELEASE", "GDP_RELEASE"):
+        # Post-release-anchoring payloads carry a precomputed headline
+        # ("MoM +0.30%, YoY +3.20%"); legacy payloads fall back to the level.
+        headline = p.get("headline")
         v = p.get("value")
-        return f"CPI index level={v}" if v is not None else ""
-    if et == "NFP_RELEASE":
-        v = p.get("value")
-        return f"nonfarm payrolls (thousands)={v}" if v is not None else ""
-    if et == "GDP_RELEASE":
-        v = p.get("value")
-        return f"real GDP (billions, SAAR)={v}" if v is not None else ""
+        label = {
+            "CPI_RELEASE": "CPI",
+            "NFP_RELEASE": "NFP",
+            "GDP_RELEASE": "GDP",
+        }[et]
+        if headline:
+            return f"{label} {headline} (level={v})"
+        return f"{label} level={v}" if v is not None else ""
     if et == "FOMC_STATEMENT":
         # Phase C body is the actual Fed press release text; truncate.
         body = p.get("body") or p.get("description") or ""
@@ -289,7 +351,7 @@ def _render_attached_documents(docs: list[Any]) -> str:
     return "\n\n".join(parts)
 
 
-# The analyzer reads settings.analyzer_prompt_version to pick the template;
-# this constant goes into the predictions.prompt_version column so we can A/B
-# v1 vs v2 historical predictions in the accuracy endpoint.
-PROMPT_VERSION = "v2"
+# Latest prompt template version. The analyzer stamps the *configured*
+# settings.analyzer_prompt_version onto each prediction row (so A/B across
+# versions stays honest); this constant just names the current default.
+PROMPT_VERSION = "v3"

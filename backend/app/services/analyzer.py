@@ -23,7 +23,10 @@ Idempotency guarantee: only process rows WHERE status = FETCHED. Once moved
 to ANALYZED or FAILED, future polls won't pick the event up again.
 """
 
+import statistics
 import uuid
+from collections import Counter
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 
 import structlog
@@ -37,13 +40,14 @@ from app.db.models import (
     EventSource,
     EventStatus,
     Prediction,
+    PredictionDirection,
     PredictionKind,
 )
 from app.db.session import transient_session
 from app.llm import clients
 from app.llm.cost import estimate_cost_usd, today_spend_usd
 from app.llm.router import ModelChoice, choose_model
-from app.llm.schemas import EventAnalysis
+from app.llm.schemas import EventAnalysis, TickerImpact
 from app.services import context_builder
 
 # Tickers eligible for kind=MARKET impacts. The two index proxies — SPY tracks
@@ -75,7 +79,7 @@ async def _process_one(db: AsyncSession, event: Event, spend_today: float) -> in
     choice = choose_model(event.source, event.event_type, spend_today)
     watchlist = settings.watchlist
 
-    if settings.analyzer_prompt_version == "v2":
+    if settings.analyzer_prompt_version in ("v2", "v3"):
         ctx = await context_builder.build_context(
             db,
             event,
@@ -83,36 +87,127 @@ async def _process_one(db: AsyncSession, event: Event, spend_today: float) -> in
             recent_events_cap=settings.analyzer_recent_events_cap,
             watchlist=watchlist,
         )
-        prompt = clients.build_prompt_v2(ctx)
+        if settings.analyzer_prompt_version == "v3":
+            prompt = clients.build_prompt_v3(ctx)
+        else:
+            prompt = clients.build_prompt_v2(ctx)
     else:
         prompt = clients.build_prompt_v1(event.payload, watchlist)
 
-    try:
-        result = await clients.analyze_event(choice, prompt)
-    except Exception as exc:
-        log.warning("analyzer.llm_failed", error=str(exc), error_type=type(exc).__name__)
+    # Self-consistency: premium-routed (high-stakes) events get N independent
+    # calls; per-ticker direction is decided by majority vote. Directional
+    # majority voting reliably beats a single sample on forecast-style tasks,
+    # and high-stakes events are rare enough that N-fold cost stays trivial.
+    n_calls = (
+        settings.analyzer_consensus_calls
+        if choice.model == settings.llm_premium_model
+        else 1
+    )
+    results: list[clients.LLMCallResult] = []
+    last_error: Exception | None = None
+    for _ in range(max(1, n_calls)):
+        try:
+            results.append(await clients.analyze_event(choice, prompt))
+        except Exception as exc:  # any provider error fails this call only
+            last_error = exc
+            log.warning(
+                "analyzer.llm_call_failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+
+    if not results:
         event.status = EventStatus.FAILED
-        event.failure_reason = f"LLM call failed: {type(exc).__name__}: {exc}"[:1000]
+        event.failure_reason = (
+            f"LLM call failed: {type(last_error).__name__}: {last_error}"[:1000]
+        )
         return 0
 
-    cost = estimate_cost_usd(choice.model, result.prompt_tokens, result.completion_tokens)
-    predictions = _build_predictions(event, result.analysis, choice, cost)
+    analysis = _consensus_analysis([r.analysis for r in results])
+    cost = sum(
+        estimate_cost_usd(choice.model, r.prompt_tokens, r.completion_tokens)
+        for r in results
+    )
+    predictions = _build_predictions(event, analysis, choice, cost)
     db.add_all(predictions)
     event.status = EventStatus.ANALYZED
     event.failure_reason = None
-    # Persist the v2 thesis paragraph so the frontend can show it for human review.
-    event.llm_summary = result.analysis.summary
+    # Persist the thesis paragraph so the frontend can show it for human review.
+    event.llm_summary = analysis.summary
 
     log.info(
         "analyzer.event_done",
         predictions=len(predictions),
         model=choice.model,
+        consensus_calls=len(results),
         cost_usd=round(cost, 6),
-        prompt_tokens=result.prompt_tokens,
-        completion_tokens=result.completion_tokens,
+        prompt_tokens=sum(r.prompt_tokens for r in results),
+        completion_tokens=sum(r.completion_tokens for r in results),
         prompt_version=settings.analyzer_prompt_version,
     )
     return len(predictions)
+
+
+def _mode[T](values: Sequence[T], tie_fallback: T) -> T:
+    """Most common value; explicit fallback on an exact tie (or empty input)."""
+    if not values:
+        return tie_fallback
+    ranked = Counter(values).most_common()
+    if len(ranked) > 1 and ranked[1][1] == ranked[0][1]:
+        return tie_fallback
+    return ranked[0][0]
+
+
+def _consensus_analysis(analyses: list[EventAnalysis]) -> EventAnalysis:
+    """Merge N independent EventAnalysis samples into one by majority vote.
+
+    Per (ticker, kind) group: modal direction (tie → NEUTRAL — disagreement IS
+    low conviction), modal magnitude (tie → MEDIUM), median confidence, and
+    the reasoning text from the first sample that voted with the majority.
+    Summary comes from the first sample. N=1 passes straight through.
+    """
+    if len(analyses) == 1:
+        return analyses[0]
+
+    grouped: dict[tuple[str, str], list[TickerImpact]] = {}
+    order: list[tuple[str, str]] = []
+    for a in analyses:
+        for impact in a.impacts:
+            key: tuple[str, str] = (impact.ticker, impact.kind)
+            if key not in grouped:
+                grouped[key] = []
+                order.append(key)
+            grouped[key].append(impact)
+
+    merged: list[TickerImpact] = []
+    majority = len(analyses) / 2
+    for key in order:
+        votes = grouped[key]
+        # Drop tickers that only a minority of samples emitted at all.
+        if len(votes) <= majority:
+            continue
+        direction = _mode([v.direction for v in votes], "NEUTRAL")
+        d7_votes = [v.direction_7d for v in votes if v.direction_7d is not None]
+        direction_7d = _mode(d7_votes, "NEUTRAL") if d7_votes else None
+        magnitude = _mode([v.magnitude for v in votes], "MEDIUM")
+        confidence = float(statistics.median([v.confidence for v in votes]))
+        reasoning = next(
+            (v.reasoning for v in votes if v.direction == direction),
+            votes[0].reasoning,
+        )
+        merged.append(
+            TickerImpact(
+                ticker=key[0],
+                kind=votes[0].kind,
+                direction=direction,
+                direction_7d=direction_7d,
+                magnitude=magnitude,
+                confidence=confidence,
+                reasoning=reasoning,
+            )
+        )
+
+    return EventAnalysis(summary=analyses[0].summary, impacts=merged)
 
 
 def _build_predictions(
@@ -173,12 +268,17 @@ def _build_predictions(
                 ticker=impact.ticker,
                 kind=kind,
                 direction=impact.direction,
+                direction_7d=(
+                    PredictionDirection(impact.direction_7d)
+                    if impact.direction_7d is not None
+                    else None
+                ),
                 magnitude=impact.magnitude,
                 confidence=impact.confidence,
                 reasoning=impact.reasoning,
                 llm_provider=choice.provider,
                 llm_model=choice.model,
-                prompt_version=clients.PROMPT_VERSION,
+                prompt_version=get_settings().analyzer_prompt_version,
                 llm_cost_usd=cost_usd if i == 0 else 0.0,
                 predicted_at=predicted_at,
             )

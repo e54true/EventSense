@@ -59,7 +59,7 @@ async def readiness(db: AsyncSession = Depends(get_db)) -> ReadyResponse:
     uptime = (now - _PROCESS_START_AT).total_seconds()
     try:
         await db.execute(text("SELECT 1"))
-    except Exception:  # noqa: BLE001 — any DB error means we're not ready
+    except Exception:  # any DB error means we're not ready
         raise HTTPException(
             status_code=503,
             detail={"status": "degraded", "uptime_seconds": uptime, "database": "down"},
