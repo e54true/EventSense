@@ -47,9 +47,9 @@ function formatDelta(key: string, delta: number | null): {
 }
 
 const DELTA_TONE: Record<"pos" | "neg" | "neutral", string> = {
-  pos: "text-green-700",
-  neg: "text-rose-700",
-  neutral: "text-slate-500",
+  pos: "text-term-up",
+  neg: "text-term-down",
+  neutral: "text-term-muted",
 };
 
 type Props = {
@@ -65,11 +65,11 @@ export function MacroContextPanel({
 }: Props) {
   if (indicators.length === 0) {
     return (
-      <section className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-sm">
-        <h2 className="text-sm font-semibold text-slate-900 uppercase tracking-wide">
-          {title}
+      <section className="border border-term-border bg-term-panel p-5">
+        <h2 className="font-mono text-xs font-bold tracking-[0.2em] text-term-muted uppercase">
+          <span className="text-term-amber">▮</span> {title}
         </h2>
-        <p className="mt-2 text-sm text-slate-500">
+        <p className="mt-2 text-sm text-term-muted">
           No indicator data yet — daily polls populate this panel once Beat runs.
         </p>
       </section>
@@ -88,28 +88,30 @@ export function MacroContextPanel({
   });
 
   return (
-    <section className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-sm">
+    <section className="border border-term-border bg-term-panel p-5">
       <div className="flex items-baseline justify-between mb-4">
-        <h2 className="text-sm font-semibold text-slate-900 uppercase tracking-wide">
-          {title}
+        <h2 className="font-mono text-xs font-bold tracking-[0.2em] text-term-muted uppercase">
+          <span className="text-term-amber">▮</span> {title}
         </h2>
-        <span className="text-xs text-slate-500">{subtitle}</span>
+        <span className="font-mono text-[10px] tracking-wider text-term-dim">
+          {subtitle}
+        </span>
       </div>
-      <dl className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <dl className="grid grid-cols-2 sm:grid-cols-4 gap-2">
         {ordered.map((ind) => {
           const delta = formatDelta(ind.indicator_key, ind.delta_30d);
           return (
             <div
               key={ind.indicator_key}
-              className="rounded-lg bg-slate-50 p-3 flex flex-col gap-1"
+              className="border border-term-border bg-term-panel2/60 p-3 flex flex-col gap-1"
             >
-              <dt className="text-[11px] uppercase tracking-wider text-slate-500">
+              <dt className="font-mono text-[10px] uppercase tracking-widest text-term-dim">
                 {INDICATOR_LABEL[ind.indicator_key] ?? ind.indicator_key}
               </dt>
-              <dd className="text-lg font-semibold text-slate-900 tabular-nums">
+              <dd className="font-mono text-lg font-bold text-term-text tabular-nums">
                 {formatValue(ind.indicator_key, ind.value)}
               </dd>
-              <dd className={cn("text-xs tabular-nums", DELTA_TONE[delta.tone])}>
+              <dd className={cn("font-mono text-xs tabular-nums", DELTA_TONE[delta.tone])}>
                 {delta.label}
               </dd>
             </div>

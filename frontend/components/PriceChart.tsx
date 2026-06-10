@@ -42,13 +42,13 @@ const PREDICTED_LINE_GAP_THRESHOLD_HOURS = 24;
 
 // Stable colour per ticker so the same line means the same thing across
 // different event pages. SPY/QQQ stay muted (baselines); company tickers
-// get a vivid colour.
+// get the amber accent.
 const LINE_STYLE: Record<string, { stroke: string; strokeWidth: number; strokeDasharray?: string }> =
   {
-    SPY: { stroke: "#94a3b8", strokeWidth: 1.5, strokeDasharray: "4 2" },
-    QQQ: { stroke: "#f59e0b", strokeWidth: 1.5, strokeDasharray: "6 3" },
+    SPY: { stroke: "#7d8fa5", strokeWidth: 1.5, strokeDasharray: "4 2" },
+    QQQ: { stroke: "#4cc3ff", strokeWidth: 1.5, strokeDasharray: "6 3" },
   };
-const COMPANY_STYLE = { stroke: "#0f172a", strokeWidth: 2 };
+const COMPANY_STYLE = { stroke: "#ffb02e", strokeWidth: 2 };
 
 function styleFor(ticker: string) {
   return LINE_STYLE[ticker] ?? COMPANY_STYLE;
@@ -72,6 +72,9 @@ function resampleDaily(points: PricePoint[]): PricePoint[] {
 function rebase(points: PricePoint[]): Map<number, number> {
   if (points.length === 0) return new Map();
   const base = Number(points[0].price);
+  // Guard: a zero/garbage base would turn every point into Infinity/NaN and
+  // corrupt the whole chart — treat the series as missing instead.
+  if (!Number.isFinite(base) || base === 0) return new Map();
   const out = new Map<number, number>();
   for (const p of points) {
     out.set(new Date(p.snapshot_at).getTime(), (Number(p.price) / base) * 100);
@@ -107,7 +110,7 @@ export function PriceChart({ tickers, publishedAt, predictedAt }: Props) {
 
   const anyLoading = queries.some((q) => q.isLoading);
   if (anyLoading) {
-    return <div className="h-72 rounded-xl border border-slate-200 bg-white animate-pulse" />;
+    return <div className="h-72 border border-term-border bg-term-panel animate-pulse" />;
   }
 
   // Per-ticker daily resample + rebase to 100 at first sample.
@@ -126,10 +129,10 @@ export function PriceChart({ tickers, publishedAt, predictedAt }: Props) {
 
   if (allTs.size === 0) {
     return (
-      <div className="rounded-xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-600">
+      <div className="border border-term-border bg-term-panel p-6 text-center text-sm text-term-muted">
         No price data for {format(publishedDate, "PP")} ± {AFTER_HOURS / 24}d.
         <br />
-        <span className="text-xs text-slate-500">
+        <span className="text-xs text-term-dim">
           This usually means the event predates the system&apos;s price-snapshot
           history. Running the price backfill against this window would fill
           the chart.
@@ -149,32 +152,35 @@ export function PriceChart({ tickers, publishedAt, predictedAt }: Props) {
     });
 
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-4">
+    <div className="border border-term-border bg-term-panel p-4">
       <div className="mb-2 flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-slate-900">
-          {uniqueTickers.join(" / ")} · daily closes, rebased to 100 at event
+        <h3 className="font-mono text-xs font-bold tracking-wider text-term-text">
+          {uniqueTickers.join(" / ")}
+          <span className="ml-2 text-term-dim font-normal">
+            DAILY CLOSE · REBASED 100 @ EVENT
+          </span>
         </h3>
-        <span className="text-xs text-slate-500 tabular-nums">
+        <span className="font-mono text-[11px] text-term-dim tabular-nums">
           {data.length} days
         </span>
       </div>
       <ResponsiveContainer width="100%" height={280}>
         <LineChart data={data} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+          <CartesianGrid strokeDasharray="3 3" stroke="#1d2938" />
           <XAxis
             dataKey="ts"
             type="number"
             scale="time"
             domain={["dataMin", "dataMax"]}
             tickFormatter={(ts: number) => format(new Date(ts), "MMM d")}
-            tick={{ fontSize: 11, fill: "#64748b" }}
-            stroke="#94a3b8"
+            tick={{ fontSize: 11, fill: "#7d8fa5", fontFamily: "var(--font-geist-mono)" }}
+            stroke="#2b3b50"
             minTickGap={30}
           />
           <YAxis
             domain={["dataMin - 0.5", "dataMax + 0.5"]}
-            tick={{ fontSize: 11, fill: "#64748b" }}
-            stroke="#94a3b8"
+            tick={{ fontSize: 11, fill: "#7d8fa5", fontFamily: "var(--font-geist-mono)" }}
+            stroke="#2b3b50"
             tickFormatter={(v: number) => v.toFixed(1)}
           />
           <Tooltip
@@ -185,34 +191,42 @@ export function PriceChart({ tickers, publishedAt, predictedAt }: Props) {
             }}
             contentStyle={{
               fontSize: 12,
-              border: "1px solid #e2e8f0",
-              borderRadius: 8,
+              fontFamily: "var(--font-geist-mono)",
+              background: "#0d141d",
+              border: "1px solid #2b3b50",
+              borderRadius: 0,
+              color: "#d6e0ec",
             }}
+            labelStyle={{ color: "#7d8fa5" }}
           />
           <Legend
             iconType="line"
-            wrapperStyle={{ fontSize: 12, paddingTop: 8 }}
+            wrapperStyle={{
+              fontSize: 12,
+              fontFamily: "var(--font-geist-mono)",
+              paddingTop: 8,
+            }}
           />
           <ReferenceLine
             x={publishedDate.getTime()}
-            stroke="#6366f1"
+            stroke="#ffb02e"
             strokeDasharray="4 4"
             label={{
               value: "event",
               position: "top",
-              fill: "#6366f1",
+              fill: "#ffb02e",
               fontSize: 11,
             }}
           />
           {showPredictedLine && (
             <ReferenceLine
               x={predictedDate.getTime()}
-              stroke="#94a3b8"
+              stroke="#7d8fa5"
               strokeDasharray="2 4"
               label={{
                 value: "analyzed",
                 position: "top",
-                fill: "#64748b",
+                fill: "#7d8fa5",
                 fontSize: 10,
               }}
             />

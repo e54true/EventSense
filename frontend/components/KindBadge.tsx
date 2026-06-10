@@ -4,11 +4,11 @@ import { cn } from "@/lib/utils";
 const STYLES: Record<PredictionKind, { label: string; classes: string }> = {
   MARKET: {
     label: "MARKET",
-    classes: "bg-indigo-50 text-indigo-700 ring-indigo-600/20",
+    classes: "text-src-fred border-src-fred/40 bg-src-fred/10",
   },
   COMPANY: {
     label: "COMPANY",
-    classes: "bg-amber-50 text-amber-800 ring-amber-600/20",
+    classes: "text-term-amber border-term-amber/40 bg-term-amber/10",
   },
 };
 
@@ -17,7 +17,7 @@ export function KindBadge({ kind }: { kind: PredictionKind }) {
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold tracking-wide ring-1 ring-inset",
+        "inline-flex items-center border px-1.5 py-px font-mono text-[10px] font-bold tracking-widest",
         classes,
       )}
     >

@@ -9,10 +9,10 @@ const DOC_LABEL: Record<DocumentKind, string> = {
 };
 
 const DOC_BADGE: Record<DocumentKind, string> = {
-  PRESS_RELEASE: "bg-emerald-50 text-emerald-700 ring-emerald-600/20",
-  FILING_COVER: "bg-purple-50 text-purple-700 ring-purple-600/20",
-  EXHIBIT: "bg-slate-100 text-slate-700 ring-slate-500/20",
-  TRANSCRIPT: "bg-amber-50 text-amber-800 ring-amber-600/20",
+  PRESS_RELEASE: "text-src-earn border-src-earn/40 bg-src-earn/10",
+  FILING_COVER: "text-src-sec border-src-sec/40 bg-src-sec/10",
+  EXHIBIT: "text-term-muted border-term-muted/40 bg-term-muted/10",
+  TRANSCRIPT: "text-term-amber border-term-amber/40 bg-term-amber/10",
 };
 
 function formatBytes(n: number): string {
@@ -36,11 +36,11 @@ export function AttachedDocumentsPanel({
 }) {
   if (documents.length === 0) {
     return (
-      <section className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-sm">
-        <h2 className="text-sm font-semibold text-slate-900 uppercase tracking-wide">
-          Attached documents
+      <section className="border border-term-border bg-term-panel p-5">
+        <h2 className="font-mono text-xs font-bold tracking-[0.2em] text-term-muted uppercase">
+          <span className="text-term-amber">▮</span> Attached documents
         </h2>
-        <p className="mt-2 text-sm text-slate-500">
+        <p className="mt-2 text-sm text-term-muted">
           No documents downloaded for this event yet. The Phase B document
           fetcher polls every minute for fresh 8-Ks; bodies typically land
           within ~2 minutes of the event arriving.
@@ -50,55 +50,55 @@ export function AttachedDocumentsPanel({
   }
 
   return (
-    <section className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-sm">
+    <section className="border border-term-border bg-term-panel p-5">
       <div className="flex items-baseline justify-between mb-4">
-        <h2 className="text-sm font-semibold text-slate-900 uppercase tracking-wide">
-          Attached documents
-          <span className="ml-2 text-slate-400 normal-case font-normal">
+        <h2 className="font-mono text-xs font-bold tracking-[0.2em] text-term-muted uppercase">
+          <span className="text-term-amber">▮</span> Attached documents
+          <span className="ml-2 text-term-dim font-normal normal-case">
             ({documents.length})
           </span>
         </h2>
-        <span className="text-xs text-slate-500">
+        <span className="font-mono text-[10px] tracking-wider text-term-dim">
           full text the LLM saw at prediction time
         </span>
       </div>
 
-      <ul className="space-y-2.5">
+      <ul className="space-y-2">
         {documents.map((d, i) => (
           <li key={`${d.doc_kind}-${i}`}>
-            <details className="rounded-xl border border-slate-200 bg-slate-50 group">
+            <details className="border border-term-border bg-term-panel2/60 group">
               <summary className="cursor-pointer p-3 text-sm flex items-center gap-3 select-none">
                 <span
                   className={cn(
-                    "inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold tracking-wide ring-1 ring-inset",
+                    "inline-flex items-center border px-1.5 py-px font-mono text-[10px] font-bold tracking-widest",
                     DOC_BADGE[d.doc_kind],
                   )}
                 >
                   {d.doc_kind}
                 </span>
-                <span className="font-medium text-slate-800">
+                <span className="font-medium text-term-text">
                   {DOC_LABEL[d.doc_kind]}
                 </span>
-                <span className="text-xs text-slate-500 ml-auto font-mono tabular-nums">
+                <span className="font-mono text-[11px] text-term-dim ml-auto tabular-nums">
                   {formatBytes(d.byte_size)}
                 </span>
               </summary>
 
               <div className="px-3 pb-3 space-y-2">
-                <div className="text-xs text-slate-500 italic px-1">
+                <div className="text-xs text-term-muted italic px-1">
                   {firstNonEmptyLine(d.content_text).slice(0, 200)}
                   {firstNonEmptyLine(d.content_text).length > 200 ? "…" : ""}
                 </div>
-                <pre className="overflow-auto max-h-96 rounded-lg bg-slate-900 p-4 text-xs text-slate-100 leading-relaxed whitespace-pre-wrap">
+                <pre className="overflow-auto max-h-96 border border-term-border bg-[#070b10] p-4 text-xs text-term-text/90 leading-relaxed whitespace-pre-wrap">
                   {d.content_text}
                 </pre>
-                <div className="text-[11px] text-slate-500 font-mono break-all px-1">
+                <div className="font-mono text-[11px] text-term-dim break-all px-1">
                   source:{" "}
                   <a
                     href={d.raw_url}
                     target="_blank"
                     rel="noreferrer noopener"
-                    className="text-indigo-600 hover:underline"
+                    className="text-term-amber hover:underline"
                   >
                     {d.raw_url}
                   </a>

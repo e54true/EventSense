@@ -4,10 +4,10 @@ import { cn } from "@/lib/utils";
 // Per-source colour coding so the timeline is scannable. The mapping is
 // arbitrary but consistent — same colour everywhere the source appears.
 const STYLES: Record<EventSource, string> = {
-  FRED: "bg-blue-50 text-blue-700 ring-blue-600/20",
-  SEC_EDGAR: "bg-purple-50 text-purple-700 ring-purple-600/20",
-  FOMC: "bg-amber-50 text-amber-800 ring-amber-600/20",
-  EARNINGS: "bg-emerald-50 text-emerald-700 ring-emerald-600/20",
+  FRED: "text-src-fred border-src-fred/40 bg-src-fred/10",
+  SEC_EDGAR: "text-src-sec border-src-sec/40 bg-src-sec/10",
+  FOMC: "text-src-fomc border-src-fomc/40 bg-src-fomc/10",
+  EARNINGS: "text-src-earn border-src-earn/40 bg-src-earn/10",
 };
 
 const LABEL: Record<EventSource, string> = {
@@ -21,7 +21,7 @@ export function SourceBadge({ source }: { source: EventSource }) {
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-semibold tracking-wide ring-1 ring-inset",
+        "inline-flex items-center border px-1.5 py-px font-mono text-[10px] font-bold tracking-widest",
         STYLES[source],
       )}
     >

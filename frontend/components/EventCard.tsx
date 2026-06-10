@@ -12,30 +12,33 @@ export function EventCard({ event }: { event: EventRead }) {
   return (
     <Link
       href={`/events/${event.id}`}
-      className="group block rounded-xl border border-slate-200 bg-white p-5 shadow-sm transition-all hover:border-slate-300 hover:shadow-md hover:-translate-y-0.5"
+      className="group block border border-term-border bg-term-panel p-4 transition-colors hover:border-term-amber/60 hover:bg-term-panel2"
     >
-      <div className="flex items-center justify-between gap-3 mb-3">
+      <div className="flex items-center justify-between gap-3 mb-2.5">
         <div className="flex items-center gap-2">
           <SourceBadge source={event.source} />
-          <span className="text-xs font-medium text-slate-500 tracking-wide">
+          <span className="font-mono text-[10px] tracking-widest text-term-dim uppercase">
             {event.event_type.replace(/_/g, " ")}
           </span>
         </div>
-        <span className="text-xs text-slate-500 tabular-nums" title={event.published_at}>
+        <span
+          className="font-mono text-[11px] text-term-dim tabular-nums"
+          title={event.published_at}
+        >
           {publishedAgo}
         </span>
       </div>
 
-      <h3 className="text-sm font-semibold text-slate-900 leading-snug line-clamp-2 group-hover:text-indigo-700 transition-colors">
+      <h3 className="text-sm font-semibold text-term-text leading-snug line-clamp-2 group-hover:text-term-amber transition-colors">
         {event.title}
       </h3>
 
       {event.affected_tickers.length > 0 && (
-        <div className="mt-3 flex flex-wrap gap-1.5">
+        <div className="mt-2.5 flex flex-wrap gap-1.5">
           {event.affected_tickers.map((t) => (
             <span
               key={t}
-              className="inline-flex rounded-md bg-slate-100 px-2 py-0.5 text-xs font-mono font-medium text-slate-700"
+              className="inline-flex border border-term-border bg-term-panel2 px-1.5 py-px font-mono text-[11px] font-semibold text-term-muted"
             >
               {t}
             </span>

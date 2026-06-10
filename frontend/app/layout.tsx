@@ -29,42 +29,46 @@ export default function RootLayout({
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col font-sans text-slate-900">
+      <body className="min-h-full flex flex-col font-sans text-term-text">
         <QueryProvider>
-          <header className="sticky top-0 z-10 border-b border-slate-200/80 bg-white/80 backdrop-blur">
-            <div className="mx-auto max-w-5xl px-6 py-4 flex items-center justify-between">
+          <header className="sticky top-0 z-10 border-b border-term-border bg-[#070b10]/90 backdrop-blur">
+            <div className="mx-auto max-w-6xl px-6 py-3 flex items-center justify-between">
               <Link
                 href="/"
-                className="flex items-center gap-2 text-base font-semibold text-slate-900"
+                className="flex items-center gap-2.5 font-mono text-sm font-bold tracking-[0.25em] text-term-text"
               >
-                <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-pink-500 text-white text-xs font-bold shadow-sm">
+                <span className="inline-flex h-6 w-6 items-center justify-center bg-term-amber text-[#0a0e14] text-[11px] font-black tracking-normal">
                   ES
                 </span>
-                EventSense
+                EVENTSENSE
               </Link>
-              <nav className="flex items-center gap-5 text-sm text-slate-600">
-                <Link href="/" className="hover:text-slate-900 transition-colors">
-                  Timeline
+              <nav className="flex items-center gap-6 font-mono text-xs tracking-widest text-term-muted">
+                <Link
+                  href="/"
+                  className="hover:text-term-amber transition-colors"
+                >
+                  TIMELINE
                 </Link>
                 <Link
                   href="/dashboard"
-                  className="hover:text-slate-900 transition-colors"
+                  className="hover:text-term-amber transition-colors"
                 >
-                  Dashboard
+                  DASHBOARD
                 </Link>
-                <span className="hidden sm:inline text-xs text-slate-400">
-                  events&nbsp;→&nbsp;LLM&nbsp;predictions&nbsp;→&nbsp;outcomes
+                <span className="hidden sm:inline-flex items-center gap-1.5 text-[10px] text-term-dim">
+                  <span className="h-1.5 w-1.5 rounded-full bg-term-up animate-pulse" />
+                  LIVE
                 </span>
               </nav>
             </div>
           </header>
-          <main className="mx-auto max-w-5xl w-full px-6 py-8 flex-1">
+          <main className="mx-auto max-w-6xl w-full px-6 py-8 flex-1">
             {children}
           </main>
-          <footer className="border-t border-slate-200/80 bg-white/40">
-            <div className="mx-auto max-w-5xl px-6 py-4 text-xs text-slate-500 flex justify-between">
-              <span>EventSense · M7 prototype</span>
-              <span className="font-mono">localhost:3000 → :8000</span>
+          <footer className="border-t border-term-border bg-[#070b10]/60">
+            <div className="mx-auto max-w-6xl px-6 py-3 font-mono text-[11px] text-term-dim flex justify-between">
+              <span>EVENTSENSE / M7 PROTOTYPE</span>
+              <span>EVENTS → LLM PREDICTIONS → OUTCOMES</span>
             </div>
           </footer>
         </QueryProvider>

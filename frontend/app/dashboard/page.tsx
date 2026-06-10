@@ -4,11 +4,12 @@
 // and model. Each slice is its own /accuracy?... query; recharts renders the
 // breakdown bars.
 
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import {
   Bar,
   BarChart,
   CartesianGrid,
+  Cell,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -45,12 +46,10 @@ export default function DashboardPage() {
       />
 
       <section>
-        <h2 className="text-sm font-semibold text-slate-900 uppercase tracking-wide mb-3">
-          Accuracy by kind
-          <span className="ml-2 text-slate-400 font-normal normal-case">
-            — does the v2 analyzer call the market or the company better?
-          </span>
-        </h2>
+        <SectionHeading
+          title="Accuracy by kind"
+          hint="— does the v2 analyzer call the market or the company better?"
+        />
         <AccuracyBarChart
           dimension="kind"
           labels={KINDS}
@@ -59,9 +58,7 @@ export default function DashboardPage() {
       </section>
 
       <section>
-        <h2 className="text-sm font-semibold text-slate-900 uppercase tracking-wide mb-3">
-          Accuracy by source
-        </h2>
+        <SectionHeading title="Accuracy by source" />
         <AccuracyBarChart
           dimension="source"
           labels={SOURCES}
@@ -70,9 +67,7 @@ export default function DashboardPage() {
       </section>
 
       <section>
-        <h2 className="text-sm font-semibold text-slate-900 uppercase tracking-wide mb-3">
-          Accuracy by window
-        </h2>
+        <SectionHeading title="Accuracy by window" />
         <AccuracyBarChart
           dimension="window"
           labels={WINDOWS}
@@ -80,6 +75,19 @@ export default function DashboardPage() {
         />
       </section>
     </div>
+  );
+}
+
+function SectionHeading({ title, hint }: { title: string; hint?: string }) {
+  return (
+    <h2 className="font-mono text-xs font-bold tracking-[0.2em] text-term-muted uppercase mb-3 border-b border-term-border pb-2">
+      <span className="text-term-amber">▮</span> {title}
+      {hint && (
+        <span className="ml-2 text-term-dim font-normal normal-case tracking-normal">
+          {hint}
+        </span>
+      )}
+    </h2>
   );
 }
 
@@ -95,24 +103,25 @@ function HeroSection({
       ? null
       : (rate * 100).toFixed(1);
   return (
-    <section className="rounded-2xl border border-slate-200/80 bg-gradient-to-br from-indigo-50 via-white to-pink-50 p-6 shadow-sm">
-      <p className="text-xs font-semibold uppercase tracking-wider text-indigo-700">
-        Aggregate accuracy
+    <section className="border border-term-border border-l-2 border-l-term-amber bg-term-panel p-6">
+      <p className="font-mono text-[10px] font-bold uppercase tracking-[0.3em] text-term-amber">
+        ▮ Aggregate accuracy
       </p>
       <div className="mt-2 flex items-baseline gap-3">
-        <span className="text-5xl font-bold tabular-nums text-slate-900">
+        <span className="font-mono text-5xl font-bold tabular-nums text-term-text">
           {pct === null ? "N/A" : `${pct}%`}
         </span>
-        <span className="text-sm text-slate-600 tabular-nums">
+        <span className="font-mono text-xs text-term-muted tabular-nums">
           {total !== undefined && total > 0
-            ? `across ${total} validated predictions`
-            : "no validated predictions yet"}
+            ? `ACROSS ${total} VALIDATED PREDICTIONS`
+            : "NO VALIDATED PREDICTIONS YET"}
         </span>
       </div>
-      <p className="mt-3 text-sm text-slate-600 max-w-2xl">
-        Predictions are aligned when the sign of <code className="font-mono">excess_return</code>{" "}
+      <p className="mt-3 text-sm text-term-muted max-w-2xl leading-relaxed">
+        Predictions are aligned when the sign of{" "}
+        <code className="font-mono text-term-text/80">excess_return</code>{" "}
         (ticker minus SPY) matches the predicted direction. NEUTRAL aligns when{" "}
-        <code className="font-mono">|excess|</code> stays under 0.5%.
+        <code className="font-mono text-term-text/80">|excess|</code> stays under 0.5%.
       </p>
     </section>
   );
@@ -122,6 +131,12 @@ interface BarRow {
   label: string;
   rate: number;
   total: number;
+}
+
+// Above/below coin-flip gets its own colour so the bars read at a glance.
+function barColor(rate: number): string {
+  if (rate >= 50) return "#2fd980";
+  return "#ff5c6c";
 }
 
 function AccuracyBarChart({
@@ -135,14 +150,14 @@ function AccuracyBarChart({
     value: string,
   ) => Promise<{ alignment_rate: number | null; total_outcomes: number }>;
 }) {
-  // One useQuery per slice — they fan out in parallel, fail independently.
-  const results = labels.map((label) =>
-    // eslint-disable-next-line react-hooks/rules-of-hooks
-    useQuery({
+  // One query per slice — they fan out in parallel, fail independently.
+  // useQueries (not useQuery-in-a-loop) keeps the Rules of Hooks intact.
+  const results = useQueries({
+    queries: labels.map((label) => ({
       queryKey: ["accuracy", dimension, label],
       queryFn: () => query(label),
-    }),
-  );
+    })),
+  });
 
   const data: BarRow[] = labels
     .map((label, i) => {
@@ -154,29 +169,30 @@ function AccuracyBarChart({
 
   if (data.length === 0) {
     return (
-      <div className="rounded-xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-500">
+      <div className="border border-term-border bg-term-panel p-6 text-center text-sm text-term-muted">
         Not enough validated predictions for this breakdown yet.
       </div>
     );
   }
 
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-4">
+    <div className="border border-term-border bg-term-panel p-4">
       <ResponsiveContainer width="100%" height={220}>
         <BarChart data={data} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+          <CartesianGrid strokeDasharray="3 3" stroke="#1d2938" />
           <XAxis
             dataKey="label"
-            tick={{ fontSize: 12, fill: "#475569" }}
-            stroke="#94a3b8"
+            tick={{ fontSize: 12, fill: "#7d8fa5", fontFamily: "var(--font-geist-mono)" }}
+            stroke="#2b3b50"
           />
           <YAxis
             domain={[0, 100]}
-            tick={{ fontSize: 11, fill: "#64748b" }}
-            stroke="#94a3b8"
+            tick={{ fontSize: 11, fill: "#7d8fa5", fontFamily: "var(--font-geist-mono)" }}
+            stroke="#2b3b50"
             tickFormatter={(v: number) => `${v}%`}
           />
           <Tooltip
+            cursor={{ fill: "rgba(255, 176, 46, 0.06)" }}
             // Recharts' Formatter typing is loose; ValueType can be number/string/array,
             // but we know our dataKey="rate" is always a number. Cast accordingly.
             formatter={(value, _name, item) => {
@@ -186,16 +202,19 @@ function AccuracyBarChart({
             }}
             contentStyle={{
               fontSize: 12,
-              border: "1px solid #e2e8f0",
-              borderRadius: 8,
+              fontFamily: "var(--font-geist-mono)",
+              background: "#0d141d",
+              border: "1px solid #2b3b50",
+              borderRadius: 0,
+              color: "#d6e0ec",
             }}
+            labelStyle={{ color: "#7d8fa5" }}
           />
-          <Bar
-            dataKey="rate"
-            fill="#6366f1"
-            radius={[4, 4, 0, 0]}
-            isAnimationActive={false}
-          />
+          <Bar dataKey="rate" isAnimationActive={false}>
+            {data.map((row) => (
+              <Cell key={row.label} fill={barColor(row.rate)} />
+            ))}
+          </Bar>
         </BarChart>
       </ResponsiveContainer>
     </div>

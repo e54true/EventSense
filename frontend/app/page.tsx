@@ -26,26 +26,26 @@ export default function Home() {
       <HeroSection />
 
       <div>
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-slate-900">
-            Recent events
+        <div className="mb-3 flex items-center justify-between border-b border-term-border pb-2">
+          <h2 className="font-mono text-xs font-bold tracking-[0.2em] text-term-muted">
+            <span className="text-term-amber">▮</span> LIVE FEED
           </h2>
-          <span className="text-xs text-slate-500 tabular-nums">
-            {data ? `${data.meta.total} total` : ""}
+          <span className="font-mono text-[11px] text-term-dim tabular-nums">
+            {data ? `${data.meta.total} TOTAL` : ""}
           </span>
         </div>
 
         {isLoading && <SkeletonTimeline />}
 
         {error && (
-          <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
-            Failed to load events: {error.message}
+          <div className="border border-term-down/40 bg-term-down/10 p-4 font-mono text-sm text-term-down">
+            FAILED TO LOAD EVENTS: {error.message}
           </div>
         )}
 
         {data && data.data.length === 0 && (
-          <div className="rounded-xl border border-slate-200 bg-white p-10 text-center">
-            <p className="text-sm text-slate-600">
+          <div className="border border-term-border bg-term-panel p-10 text-center">
+            <p className="text-sm text-term-muted">
               No events yet. The fetcher workers populate this list as new
               events arrive from FRED / SEC / FOMC.
             </p>
@@ -53,7 +53,7 @@ export default function Home() {
         )}
 
         {data && data.data.length > 0 && (
-          <ul className="space-y-3">
+          <ul className="space-y-2">
             {data.data.map((event) => (
               <li key={event.id}>
                 <EventCard event={event} />
@@ -68,22 +68,22 @@ export default function Home() {
 
 function HeroSection() {
   return (
-    <section className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-sm">
+    <section className="border border-term-border bg-term-panel p-6">
       <div className="flex flex-col gap-1">
-        <p className="text-xs font-semibold uppercase tracking-wider text-indigo-600">
-          Live pipeline
+        <p className="font-mono text-[10px] font-bold tracking-[0.3em] text-term-amber">
+          ▮ LIVE PIPELINE
         </p>
-        <h1 className="text-2xl font-bold text-slate-900">
+        <h1 className="text-2xl font-bold text-term-text tracking-tight">
           Market events &amp; LLM predictions
         </h1>
-        <p className="mt-1 text-sm text-slate-600 max-w-2xl">
+        <p className="mt-1 text-sm text-term-muted max-w-2xl leading-relaxed">
           Macro and corporate events from FRED, SEC EDGAR, FOMC, and earnings
           calendars. Each event is automatically analyzed by an LLM and validated
           against real price movement.
         </p>
       </div>
 
-      <div className="mt-5 grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className="mt-5 grid grid-cols-2 sm:grid-cols-4 gap-2">
         {SOURCE_OPTIONS.map((s) => (
           <AccuracyPill key={s.value} source={s.value} label={s.label} />
         ))}
@@ -94,11 +94,11 @@ function HeroSection() {
 
 function SkeletonTimeline() {
   return (
-    <ul className="space-y-3">
+    <ul className="space-y-2">
       {Array.from({ length: 5 }).map((_, i) => (
         <li
           key={i}
-          className="h-28 rounded-xl border border-slate-200 bg-white animate-pulse"
+          className="h-24 border border-term-border bg-term-panel animate-pulse"
         />
       ))}
     </ul>

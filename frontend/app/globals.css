@@ -1,34 +1,76 @@
 @import "tailwindcss";
 
-/* Light theme only for now. We don't try to auto-flip on system dark mode
- * because half-dark-half-light is worse than either committed look — our
- * Tailwind classes (bg-white / text-gray-900) don't have dark: variants yet.
- * A real dark theme will come in a later milestone. */
+/* Bloomberg-terminal-inspired dark theme. One committed look — all colors
+ * flow from these tokens so the palette can be retuned in one place.
+ * Conventions: amber = brand/accent, green = up/aligned, red = down/missed,
+ * mono everywhere numbers or machine identifiers appear. */
 
 :root {
-  color-scheme: light;
-  --background: #f6f7fb;
-  --foreground: #0f172a;
+  color-scheme: dark;
+}
+
+@theme {
+  /* Surfaces */
+  --color-term-bg: #0a0e14; /* page background */
+  --color-term-panel: #0d141d; /* cards / sections */
+  --color-term-panel2: #111a26; /* nested surfaces (table heads, wells) */
+  --color-term-border: #1d2938; /* hairline borders */
+  --color-term-border2: #2b3b50; /* hover / emphasized borders */
+
+  /* Text */
+  --color-term-text: #d6e0ec; /* primary */
+  --color-term-muted: #7d8fa5; /* secondary */
+  --color-term-dim: #4d5f74; /* tertiary / labels */
+
+  /* Semantics */
+  --color-term-amber: #ffb02e; /* brand accent */
+  --color-term-up: #2fd980; /* positive / aligned */
+  --color-term-down: #ff5c6c; /* negative / missed */
+
+  /* Source identities (dark-tuned) */
+  --color-src-fred: #4cc3ff;
+  --color-src-sec: #c084fc;
+  --color-src-fomc: #ffb02e;
+  --color-src-earn: #34d399;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-background: var(--color-term-bg);
+  --color-foreground: var(--color-term-text);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
 html,
 body {
-  background: var(--background);
-  color: var(--foreground);
+  background: var(--color-term-bg);
+  color: var(--color-term-text);
 }
 
-/* Subtle radial gradient on the body — gives the flat gray more depth
- * without distracting from content. */
+/* Faint phosphor glow in the top corners — depth without noise. */
 body {
   background-image:
-    radial-gradient(circle at 0% 0%, rgba(99, 102, 241, 0.06), transparent 40%),
-    radial-gradient(circle at 100% 0%, rgba(244, 114, 182, 0.05), transparent 40%);
+    radial-gradient(ellipse at 0% 0%, rgba(255, 176, 46, 0.045), transparent 45%),
+    radial-gradient(ellipse at 100% 0%, rgba(76, 195, 255, 0.035), transparent 45%);
   background-attachment: fixed;
+}
+
+/* Terminal scrollbars. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #2b3b50 transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #2b3b50;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::selection {
+  background: rgba(255, 176, 46, 0.25);
 }

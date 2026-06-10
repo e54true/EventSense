@@ -1,6 +1,6 @@
-// Renders the 1h / 24h / 7d outcomes for one prediction.
+// Renders the 24h / 7d outcomes for one prediction.
 //
-// Three slots fixed in column order so users can scan rows of predictions
+// Slots fixed in column order so users can scan rows of predictions
 // and see the same time horizons line up. Three possible row states:
 //
 //   1. filled — outcome row exists, show return + aligned tick
@@ -30,9 +30,9 @@ function formatPct(v: number): string {
 }
 
 function returnColor(v: number): string {
-  if (v > 0) return "text-green-700";
-  if (v < 0) return "text-rose-700";
-  return "text-slate-500";
+  if (v > 0) return "text-term-up";
+  if (v < 0) return "text-term-down";
+  return "text-term-muted";
 }
 
 function formatTimeLeft(hours: number): string {
@@ -71,54 +71,54 @@ export function OutcomesTable({
   const byWindow = new Map(outcomes.map((o) => [o.window, o]));
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-slate-50/50 overflow-hidden">
-      <table className="w-full text-xs">
-        <thead className="bg-slate-100/80">
-          <tr className="text-left text-[10px] uppercase tracking-wider text-slate-500">
-            <th className="px-3 py-2 font-medium w-20">Window</th>
-            <th className="px-3 py-2 font-medium text-right">Ticker return</th>
-            <th className="px-3 py-2 font-medium text-center w-24">Aligned</th>
+    <div className="border border-term-border bg-term-panel2/50 overflow-hidden">
+      <table className="w-full font-mono text-xs">
+        <thead className="bg-term-panel2">
+          <tr className="text-left text-[10px] uppercase tracking-widest text-term-dim">
+            <th className="px-3 py-1.5 font-bold w-20">Window</th>
+            <th className="px-3 py-1.5 font-bold text-right">Ticker return</th>
+            <th className="px-3 py-1.5 font-bold text-center w-24">Aligned</th>
           </tr>
         </thead>
-        <tbody className="divide-y divide-slate-200/80">
+        <tbody className="divide-y divide-term-border">
           {WINDOWS.map((w) => {
             const state = rowStateFor(w, predictedAt, byWindow.get(w));
             return (
               <tr key={w}>
-                <td className="px-3 py-2 font-mono font-semibold text-slate-900 w-20">
+                <td className="px-3 py-1.5 font-bold text-term-text w-20">
                   {w}
                 </td>
                 {state.kind === "filled" ? (
                   <>
                     <td
                       className={cn(
-                        "px-3 py-2 text-right tabular-nums font-semibold",
+                        "px-3 py-1.5 text-right tabular-nums font-bold",
                         returnColor(state.outcome.ticker_return),
                       )}
                     >
                       {formatPct(state.outcome.ticker_return)}
                     </td>
-                    <td className="px-3 py-2 text-center w-24">
+                    <td className="px-3 py-1.5 text-center w-24">
                       {state.outcome.aligned ? (
-                        <span className="text-green-600 font-bold">✓</span>
+                        <span className="text-term-up font-bold">✓</span>
                       ) : (
-                        <span className="text-rose-500 font-bold">✗</span>
+                        <span className="text-term-down font-bold">✗</span>
                       )}
                     </td>
                   </>
                 ) : state.kind === "maturing" ? (
                   <>
-                    <td className="px-3 py-2 text-right text-slate-400 italic tabular-nums">
+                    <td className="px-3 py-1.5 text-right text-term-dim italic tabular-nums">
                       maturing · {formatTimeLeft(state.hoursLeft)}
                     </td>
-                    <td className="px-3 py-2 text-center text-slate-300 w-24">
+                    <td className="px-3 py-1.5 text-center text-term-dim w-24">
                       —
                     </td>
                   </>
                 ) : (
                   <>
                     <td
-                      className="px-3 py-2 text-right text-slate-400 italic"
+                      className="px-3 py-1.5 text-right text-term-dim italic"
                       title={
                         w === "1h"
                           ? "1h window can't be filled when only daily price snapshots are available — needs intraday data captured around predicted_at"
@@ -127,7 +127,7 @@ export function OutcomesTable({
                     >
                       no data
                     </td>
-                    <td className="px-3 py-2 text-center text-slate-300 w-24">
+                    <td className="px-3 py-1.5 text-center text-term-dim w-24">
                       —
                     </td>
                   </>

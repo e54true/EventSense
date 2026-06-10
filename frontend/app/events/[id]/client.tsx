@@ -48,60 +48,60 @@ export function EventDetailClient({ id }: { id: string }) {
     <div className="space-y-6">
       <BackLink />
 
-      <header className="rounded-2xl border border-slate-200/80 bg-white p-6 shadow-sm">
+      <header className="border border-term-border bg-term-panel p-6">
         <div className="flex items-center gap-2 mb-4 flex-wrap">
           <SourceBadge source={event.source} />
-          <span className="text-xs font-medium text-slate-500 tracking-wide">
+          <span className="font-mono text-[10px] tracking-widest text-term-dim uppercase">
             {event.event_type.replace(/_/g, " ")}
           </span>
           <StatusChip status={event.status} />
           <span
-            className="text-xs text-slate-500 ml-auto"
+            className="font-mono text-[11px] text-term-dim ml-auto tabular-nums"
             title={event.published_at}
           >
             {format(new Date(event.published_at), "PPpp")} · {publishedAgo}
           </span>
         </div>
 
-        <h1 className="text-xl font-bold text-slate-900 leading-snug">
+        <h1 className="text-xl font-bold text-term-text leading-snug">
           {event.title}
         </h1>
 
-        <dl className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-          <div className="rounded-lg bg-slate-50 p-3">
-            <dt className="text-[11px] uppercase tracking-wider text-slate-500 mb-0.5">
+        <dl className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+          <div className="border border-term-border bg-term-panel2/60 p-3">
+            <dt className="font-mono text-[10px] uppercase tracking-widest text-term-dim mb-0.5">
               External ID
             </dt>
-            <dd className="font-mono text-slate-800 text-xs break-all">
+            <dd className="font-mono text-term-muted text-xs break-all">
               {event.external_id}
             </dd>
           </div>
-          <div className="rounded-lg bg-slate-50 p-3">
-            <dt className="text-[11px] uppercase tracking-wider text-slate-500 mb-0.5">
+          <div className="border border-term-border bg-term-panel2/60 p-3">
+            <dt className="font-mono text-[10px] uppercase tracking-widest text-term-dim mb-0.5">
               Affected tickers
             </dt>
-            <dd className="text-slate-800">
+            <dd className="text-term-text">
               {event.affected_tickers.length > 0 ? (
-                <div className="flex flex-wrap gap-1">
+                <div className="flex flex-wrap gap-2">
                   {event.affected_tickers.map((t) => (
                     <span
                       key={t}
-                      className="font-mono text-xs font-semibold text-slate-900"
+                      className="font-mono text-xs font-bold text-term-amber"
                     >
                       {t}
                     </span>
                   ))}
                 </div>
               ) : (
-                <span className="text-slate-500">none</span>
+                <span className="text-term-dim">none</span>
               )}
             </dd>
           </div>
-          <div className="rounded-lg bg-slate-50 p-3">
-            <dt className="text-[11px] uppercase tracking-wider text-slate-500 mb-0.5">
+          <div className="border border-term-border bg-term-panel2/60 p-3">
+            <dt className="font-mono text-[10px] uppercase tracking-widest text-term-dim mb-0.5">
               Fetched
             </dt>
-            <dd className="text-slate-800 text-xs">
+            <dd className="text-term-muted text-xs">
               {formatDistanceToNow(new Date(event.fetched_at), {
                 addSuffix: true,
               })}
@@ -110,7 +110,7 @@ export function EventDetailClient({ id }: { id: string }) {
         </dl>
 
         {event.failure_reason && (
-          <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+          <div className="mt-4 border border-term-amber/40 bg-term-amber/10 p-3 text-xs text-term-amber">
             <strong className="font-semibold">Failure reason:</strong>{" "}
             {event.failure_reason}
           </div>
@@ -123,9 +123,9 @@ export function EventDetailClient({ id }: { id: string }) {
 
       {predictions.length > 0 && (
         <section className="space-y-3">
-          <h2 className="text-sm font-semibold text-slate-900 uppercase tracking-wide">
-            Price action
-            <span className="ml-2 text-slate-400 normal-case">
+          <h2 className="font-mono text-xs font-bold tracking-[0.2em] text-term-muted uppercase">
+            <span className="text-term-amber">▮</span> Price action
+            <span className="ml-2 text-term-dim normal-case font-normal tracking-normal">
               — windowed on event time, rebased to 100
             </span>
           </h2>
@@ -146,7 +146,7 @@ export function EventDetailClient({ id }: { id: string }) {
           <PredictionLegend />
         </div>
         {predictions.length === 0 ? (
-          <div className="rounded-xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-600">
+          <div className="border border-term-border bg-term-panel p-6 text-center text-sm text-term-muted">
             No predictions yet — the analyzer worker runs every minute, so a
             FETCHED event should pick up an analysis shortly.
           </div>
@@ -180,15 +180,15 @@ export function EventDetailClient({ id }: { id: string }) {
         lookbackDays={context.lookback_days}
       />
 
-      <details className="rounded-2xl border border-slate-200/80 bg-white shadow-sm">
-        <summary className="cursor-pointer p-4 text-sm font-medium text-slate-700 select-none flex items-center justify-between">
+      <details className="border border-term-border bg-term-panel">
+        <summary className="cursor-pointer p-4 font-mono text-xs font-bold tracking-[0.2em] text-term-muted uppercase select-none flex items-center justify-between">
           <span>Raw payload (JSON)</span>
-          <span className="text-xs text-slate-400">
+          <span className="text-[10px] text-term-dim tracking-normal">
             {Object.keys(event.payload).length} fields
           </span>
         </summary>
         <div className="px-4 pb-4">
-          <pre className="overflow-x-auto rounded-lg bg-slate-900 p-4 text-xs text-slate-100 leading-relaxed">
+          <pre className="overflow-x-auto border border-term-border bg-[#070b10] p-4 text-xs text-term-text/90 leading-relaxed">
             {JSON.stringify(event.payload, null, 2)}
           </pre>
         </div>
@@ -205,14 +205,14 @@ function PredictionsHeader({
   totalCost: number;
 }) {
   return (
-    <div className="mb-3 flex items-center justify-between">
-      <h2 className="text-sm font-semibold text-slate-900 uppercase tracking-wide">
-        LLM predictions
-        <span className="ml-2 text-slate-400">({predictions.length})</span>
+    <div className="mb-3 flex items-center justify-between border-b border-term-border pb-2">
+      <h2 className="font-mono text-xs font-bold tracking-[0.2em] text-term-muted uppercase">
+        <span className="text-term-amber">▮</span> LLM predictions
+        <span className="ml-2 text-term-dim">({predictions.length})</span>
       </h2>
       {predictions.length > 0 && (
-        <div className="text-xs text-slate-500 font-mono tabular-nums">
-          Total cost ${totalCost.toFixed(5)}
+        <div className="font-mono text-[11px] text-term-dim tabular-nums">
+          TOTAL COST ${totalCost.toFixed(5)}
         </div>
       )}
     </div>
@@ -230,18 +230,18 @@ function PredictionGroup({
 }) {
   return (
     <div>
-      <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
+      <h3 className="font-mono text-[11px] font-bold text-term-dim uppercase tracking-widest mb-2">
         {heading}
-        <span className="ml-2 text-slate-400 normal-case font-normal">
+        <span className="ml-2 normal-case font-normal">
           ({predictions.length})
         </span>
       </h3>
       {predictions.length === 0 ? (
         emptyHint ? (
-          <p className="text-xs text-slate-500 italic px-1">{emptyHint}</p>
+          <p className="text-xs text-term-dim italic px-1">{emptyHint}</p>
         ) : null
       ) : (
-        <ul className="space-y-2.5">
+        <ul className="space-y-2">
           {predictions.map((p) => (
             <li key={p.id}>
               <PredictionRow prediction={p} />
@@ -292,7 +292,7 @@ function SourceLinks({ payload }: { payload: Record<string, unknown> }) {
 
   return (
     <div className="mt-4 flex flex-wrap items-center gap-2">
-      <span className="text-[11px] uppercase tracking-wider text-slate-500">
+      <span className="font-mono text-[10px] uppercase tracking-widest text-term-dim">
         Source links
       </span>
       {links.map((l) => (
@@ -301,10 +301,10 @@ function SourceLinks({ payload }: { payload: Record<string, unknown> }) {
           href={l.url}
           target="_blank"
           rel="noreferrer noopener"
-          className="inline-flex items-center gap-1 rounded-md bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700 ring-1 ring-inset ring-indigo-600/20 hover:bg-indigo-100 transition-colors"
+          className="inline-flex items-center gap-1 border border-term-amber/40 bg-term-amber/10 px-2 py-0.5 font-mono text-[11px] font-medium text-term-amber hover:bg-term-amber/20 transition-colors"
         >
           {l.label}
-          <span aria-hidden className="text-indigo-500">↗</span>
+          <span aria-hidden>↗</span>
         </a>
       ))}
     </div>
@@ -332,14 +332,14 @@ function chartTickersForEvent(event: {
 
 function StatusChip({ status }: { status: string }) {
   const styles: Record<string, string> = {
-    FETCHED: "bg-slate-100 text-slate-700",
-    ANALYZED: "bg-indigo-100 text-indigo-700",
-    FAILED: "bg-rose-100 text-rose-700",
-    IGNORED: "bg-slate-100 text-slate-500",
+    FETCHED: "text-term-muted border-term-muted/40 bg-term-muted/10",
+    ANALYZED: "text-src-fred border-src-fred/40 bg-src-fred/10",
+    FAILED: "text-term-down border-term-down/40 bg-term-down/10",
+    IGNORED: "text-term-dim border-term-dim/40 bg-term-dim/10",
   };
   return (
     <span
-      className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold tracking-wide ${
+      className={`inline-flex items-center border px-1.5 py-px font-mono text-[10px] font-bold tracking-widest ${
         styles[status] ?? styles.FETCHED
       }`}
     >
@@ -352,9 +352,9 @@ function BackLink() {
   return (
     <Link
       href="/"
-      className="inline-flex items-center gap-1 text-sm text-slate-600 hover:text-slate-900 transition-colors"
+      className="inline-flex items-center gap-1 font-mono text-xs tracking-wider text-term-muted hover:text-term-amber transition-colors"
     >
-      ← Back to timeline
+      ← BACK TO TIMELINE
     </Link>
   );
 }
@@ -362,9 +362,9 @@ function BackLink() {
 function Skeleton() {
   return (
     <div className="space-y-4">
-      <div className="h-4 w-32 rounded bg-slate-200 animate-pulse" />
-      <div className="h-44 rounded-2xl border border-slate-200 bg-white animate-pulse" />
-      <div className="h-32 rounded-2xl border border-slate-200 bg-white animate-pulse" />
+      <div className="h-4 w-32 bg-term-panel2 animate-pulse" />
+      <div className="h-44 border border-term-border bg-term-panel animate-pulse" />
+      <div className="h-32 border border-term-border bg-term-panel animate-pulse" />
     </div>
   );
 }
@@ -373,9 +373,9 @@ function ErrorBlock({ title, detail }: { title: string; detail: string }) {
   return (
     <div className="space-y-4">
       <BackLink />
-      <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+      <div className="border border-term-down/40 bg-term-down/10 p-4 text-sm text-term-down">
         <p className="font-semibold">{title}</p>
-        <p className="mt-1 text-rose-700">{detail}</p>
+        <p className="mt-1 opacity-80">{detail}</p>
       </div>
     </div>
   );
