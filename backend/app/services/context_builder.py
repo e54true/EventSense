@@ -10,6 +10,7 @@ tables (token-efficient — full payloads would balloon the prompt).
 """
 
 import statistics
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
@@ -91,8 +92,12 @@ class RecentEventSummary:
     Carries through the full payload (so renderer can pull a per-source
     highlight line) plus any prior predictions + already-validated outcomes
     (so the LLM can see its own track record without prescribed self-calibration).
+
+    `event_id` is for the API layer (event-detail context links back to the
+    referenced events); the prompt renderer ignores it.
     """
 
+    event_id: uuid.UUID
     published_at: datetime
     source: str
     event_type: str
@@ -216,6 +221,7 @@ async def _recent_events(
 
         summaries.append(
             RecentEventSummary(
+                event_id=event.id,
                 published_at=event.published_at,
                 source=str(event.source.value),
                 event_type=event.event_type,

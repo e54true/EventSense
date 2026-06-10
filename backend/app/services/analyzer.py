@@ -329,6 +329,12 @@ async def analyze_pending(db: AsyncSession, batch_size: int | None = None) -> di
     log.info("analyzer.batch.started")
 
     candidate_ids = await _candidate_event_ids(db, batch_size)
+    # End the scan's transaction immediately. The outer session is read-only
+    # discovery; leaving its transaction open for the whole batch (minutes,
+    # with multi-call consensus) holds locks on `events` that block DDL /
+    # TRUNCATE elsewhere (observed: integration tests deadlocking against a
+    # 49-minute idle-in-transaction analyzer scan).
+    await db.commit()
 
     processed = 0
     predictions_total = 0

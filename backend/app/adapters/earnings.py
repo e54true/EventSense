@@ -24,7 +24,7 @@ import httpx
 import structlog
 import yfinance as yf
 
-from app.config.cik_map import TICKER_TO_CIK
+from app.config.cik_map import TICKER_INGEST_SINCE, TICKER_TO_CIK
 from app.config.settings import get_settings
 from app.db.models import EventSource
 from app.schemas.raw_event import RawEvent
@@ -344,10 +344,16 @@ async def fetch_new() -> list[RawEvent]:
             rows = _earnings_history_rows(ticker)
             if not rows:
                 continue
+            # Late-added tickers start at their join date — no history backfill.
+            since = TICKER_INGEST_SINCE.get(ticker)
+            ticker_cutoff = cutoff
+            if since is not None:
+                since_dt = datetime(since.year, since.month, since.day, tzinfo=UTC)
+                ticker_cutoff = max(cutoff, since_dt)
             # One income_stmt fetch per ticker, reused across all that ticker's rows.
             income_by_quarter = _fetch_income_stmt_by_quarter(ticker)
             for row in rows:
-                if row["report_date"] < cutoff:
+                if row["report_date"] < ticker_cutoff:
                     continue
                 quarter_date = row["report_date"].date()
                 fundamentals = _build_fundamentals(income_by_quarter, quarter_date)

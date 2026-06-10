@@ -42,8 +42,11 @@ class Settings(BaseSettings):
 
     # Watchlist of tickers we poll for prices, earnings, 8-Ks. SPY is mandatory —
     # it's the baseline for excess-return calculations in the validator (Milestone 6).
+    # Top-10 US companies by market cap + the two index ETFs. Late additions
+    # (AVGO/BRK-B/LLY) are listed in cik_map.TICKER_INGEST_SINCE so fetchers
+    # don't backfill their history.
     default_tickers: str = Field(
-        default="NVDA,TSLA,AAPL,MSFT,GOOGL,META,AMZN,SPY,QQQ",
+        default="NVDA,TSLA,AAPL,MSFT,GOOGL,META,AMZN,AVGO,BRK-B,LLY,SPY,QQQ",
         description="Comma-separated ticker list",
     )
 

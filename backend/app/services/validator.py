@@ -219,6 +219,9 @@ async def validate_pending(db: AsyncSession, batch_size: int = 50) -> dict[str, 
     log.info("validator.batch.started")
 
     candidates = await _candidate_pairs(db, now, batch_size)
+    # End the discovery transaction right away — same lock-hygiene rationale
+    # as analyze_pending: don't idle-in-transaction across the batch.
+    await db.commit()
 
     written = 0
     deferred = 0

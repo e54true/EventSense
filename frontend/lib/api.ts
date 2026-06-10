@@ -7,6 +7,8 @@
 import type {
   AccuracyResponse,
   EventDetailResponse,
+  EventFilters,
+  EventFiltersResponse,
   EventListResponse,
   EventSource,
   IndicatorsLatestResponse,
@@ -44,8 +46,23 @@ async function request<T>(path: string): Promise<T> {
 }
 
 export const api = {
-  listEvents: (page = 1, perPage = 20): Promise<EventListResponse> =>
-    request(`/api/v1/events?page=${page}&per_page=${perPage}`),
+  listEvents: (
+    page = 1,
+    perPage = 20,
+    filters?: EventFilters,
+  ): Promise<EventListResponse> => {
+    const params = new URLSearchParams({
+      page: String(page),
+      per_page: String(perPage),
+    });
+    if (filters?.source) params.set("source", filters.source);
+    if (filters?.ticker) params.set("ticker", filters.ticker);
+    if (filters?.event_type) params.set("event_type", filters.event_type);
+    return request(`/api/v1/events?${params}`);
+  },
+
+  getEventFilters: (): Promise<EventFiltersResponse> =>
+    request(`/api/v1/events/filters`),
 
   getEvent: (id: string): Promise<EventDetailResponse> =>
     request(`/api/v1/events/${id}`),

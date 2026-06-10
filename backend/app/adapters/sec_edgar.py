@@ -26,7 +26,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from app.config.cik_map import TICKER_TO_CIK
+from app.config.cik_map import TICKER_INGEST_SINCE, TICKER_TO_CIK
 from app.config.settings import get_settings
 from app.db.models import EventSource
 from app.schemas.raw_event import RawEvent
@@ -156,7 +156,10 @@ async def fetch_new() -> list[RawEvent]:
                     status=exc.response.status_code,
                 )
                 continue
-            ticker_events = _parse_recent_8ks(submissions, cik, ticker, cutoff)
+            # Late-added tickers start at their join date — no history backfill.
+            since = TICKER_INGEST_SINCE.get(ticker)
+            ticker_cutoff = max(cutoff, since) if since else cutoff
+            ticker_events = _parse_recent_8ks(submissions, cik, ticker, ticker_cutoff)
             all_events.extend(ticker_events)
             await asyncio.sleep(_RATE_LIMIT_SLEEP)
 

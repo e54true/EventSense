@@ -3,12 +3,12 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import any_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config.settings import get_settings
-from app.db.models import DocumentKind, Event, EventDocument, Prediction
+from app.db.models import DocumentKind, Event, EventDocument, EventSource, Prediction
 from app.db.session import get_db
 from app.schemas.event import EventListResponse, EventRead, PaginationMeta
 from app.schemas.prediction import PredictionWithOutcomes
@@ -29,6 +29,7 @@ class IndicatorSnapshotRead(BaseModel):
 class RecentEventRead(BaseModel):
     """Compact event summary used inside the event-detail context block."""
 
+    id: uuid.UUID
     published_at: datetime
     source: str
     event_type: str
@@ -70,17 +71,40 @@ class EventDetailResponse(BaseModel):
 async def list_events(
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
+    source: EventSource | None = Query(None, description="Filter by event source"),
+    ticker: str | None = Query(
+        None, description="Filter by affected ticker (case-insensitive)"
+    ),
+    event_type: str | None = Query(None, description="Filter by event type"),
     db: AsyncSession = Depends(get_db),
 ) -> EventListResponse:
-    """List events with simple offset pagination.
+    """List events with simple offset pagination + optional filters.
+
+    All filters AND together. `total` reflects the FILTERED count so the
+    frontend's infinite scroll knows when to stop.
 
     Cursor pagination will replace this in a later milestone when volume grows
     (spec §10 — currently this is fine for MVP).
     """
-    total = await db.scalar(select(func.count()).select_from(Event)) or 0
+    conditions = []
+    if source is not None:
+        conditions.append(Event.source == source)
+    if ticker is not None:
+        # ticker = ANY(affected_tickers) — works on the generic ARRAY type
+        # (dialect-specific .contains()/@> isn't available on sa.ARRAY).
+        # SQL expression on the LEFT so SQLAlchemy's __eq__ (not str's) builds
+        # the clause — ANY(affected_tickers) = :ticker.
+        conditions.append(any_(Event.affected_tickers) == ticker.upper())
+    if event_type is not None:
+        conditions.append(Event.event_type == event_type)
+
+    total = (
+        await db.scalar(select(func.count()).select_from(Event).where(*conditions))
+    ) or 0
 
     result = await db.scalars(
         select(Event)
+        .where(*conditions)
         .order_by(Event.published_at.desc())
         .offset((page - 1) * per_page)
         .limit(per_page)
@@ -90,6 +114,36 @@ async def list_events(
     return EventListResponse(
         data=[EventRead.model_validate(e) for e in events],
         meta=PaginationMeta(page=page, per_page=per_page, total=total),
+    )
+
+
+class EventFiltersResponse(BaseModel):
+    """Distinct values present in the events table — drives the filter UI.
+
+    Computed live so a new source/event_type/ticker appears in the filter bar
+    without a frontend change.
+    """
+
+    sources: list[str]
+    event_types: list[str]
+    tickers: list[str]
+
+
+# NOTE: registered before /{event_id} — FastAPI matches in declaration order,
+# and "filters" must not be parsed as an event UUID.
+@router.get("/filters", response_model=EventFiltersResponse)
+async def get_event_filters(db: AsyncSession = Depends(get_db)) -> EventFiltersResponse:
+    sources = (await db.scalars(select(Event.source).distinct())).all()
+    event_types = (
+        await db.scalars(select(Event.event_type).distinct().order_by(Event.event_type))
+    ).all()
+    tickers = (
+        await db.scalars(select(func.unnest(Event.affected_tickers)).distinct())
+    ).all()
+    return EventFiltersResponse(
+        sources=sorted(s.value for s in sources),
+        event_types=list(event_types),
+        tickers=sorted(tickers),
     )
 
 
@@ -137,6 +191,7 @@ async def get_event(
     ]
     recent = [
         RecentEventRead(
+            id=r.event_id,
             published_at=r.published_at,
             source=r.source,
             event_type=r.event_type,

@@ -91,6 +91,18 @@ export interface EventListResponse {
   meta: PaginationMeta;
 }
 
+export interface EventFilters {
+  source?: EventSource;
+  ticker?: string;
+  event_type?: string;
+}
+
+export interface EventFiltersResponse {
+  sources: string[];
+  event_types: string[];
+  tickers: string[];
+}
+
 export interface IndicatorSnapshotRead {
   indicator_key: string;
   value: number;
@@ -99,6 +111,7 @@ export interface IndicatorSnapshotRead {
 }
 
 export interface RecentEventRead {
+  id: string;
   published_at: string;
   source: string;
   event_type: string;
