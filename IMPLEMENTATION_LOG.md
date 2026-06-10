@@ -19,6 +19,7 @@
 - [Milestone 7 — Frontend Sprint 1](#milestone-7--frontend-sprint-1)
 - [Milestone 8 — Frontend Sprint 2 + tests + CI](#milestone-8--frontend-sprint-2--tests--ci)
 - [Milestone 9 — Deploy (Railway)](#milestone-9--deploy-railway)
+- [Milestone 9.5 — Production hardening + analyzer overhaul](#milestone-95--production-hardening--analyzer-overhaul)
 - [Milestone 10 — Auth + watchlist](#milestone-10--auth--watchlist)
 - [Milestone 11 — Observability](#milestone-11--observability)
 - [Milestone 12 — Polish + ship](#milestone-12--polish--ship)
@@ -940,6 +941,8 @@
 
 > **狀態**:✅ 完成
 > **目標**:接 OpenAI + Anthropic + `instructor`,新 `predictions` 表,Analyzer worker(FETCHED events → LLM 預測 → ANALYZED),model router、cost tracking、daily cap。
+>
+> 📝 **後續更新**:M5 寫的 prompt v1 / 單一 prediction model / 單純 direction-only 結構,在 M9 上線後一系列 commit 裡被改寫過。詳見 [Milestone 9.5 — Production hardening + analyzer overhaul](#milestone-95--production-hardening--analyzer-overhaul)。本節內容保留作歷史紀錄。
 
 ### 做了什麼(依檔案分類)
 
@@ -1261,6 +1264,8 @@ FRED (ECONOMIC_RELEASE):
 
 > **狀態**:✅ 完成
 > **目標**:新 `prediction_outcomes` 表 + Validator worker → 把「事件 → 預測 → 真實結果」的閉環收起來。每個 prediction 在 +1h / +24h / +7d 三個時間窗自動計算 excess return + alignment。`GET /accuracy` 查整體準確率。
+>
+> 📝 **後續更新**:M6 寫的 **excess-return / SPY-as-baseline / H1+H24+D7 三窗**,在 M9.5 都被改了 — 現在 alignment 直接看 raw return,outcome window 只剩 H24 + D7。詳見 [Milestone 9.5](#milestone-95--production-hardening--analyzer-overhaul) 的「Alignment refactor」跟「Outcome windows 改造」兩節。本節內容保留作歷史紀錄,有助於了解設計演化過程。
 
 ### 做了什麼(依檔案分類)
 
@@ -1967,6 +1972,8 @@ LLM PREDICTIONS (1)
 
 > **狀態**:✅ 完成 — **production 真的上線**
 > **目標**:後端 4 個 service(backend / worker / analyzer / beat)+ Postgres + Redis 部署到 Railway;frontend 部署到 Vercel;系統自動跑 + 任何人能打開 URL。
+>
+> 📝 **後續更新**:本節記錄的是 M9 部署當下的 production 狀態(20 events / 36 predictions / FRED 56% 等)。M9 上線後系統持續演化,~25 個 commit 把 analyzer 從「zero-shot LLM」改造成「contextual analyzer」、把 alignment 從 excess-return 改成 raw-return、加 8-K body 下載、加 indicators 表、寫了三個 production 維護腳本。完整改造記錄在 [Milestone 9.5 — Production hardening + analyzer overhaul](#milestone-95--production-hardening--analyzer-overhaul)。本節保留 M9 deploy 當下的 snapshot。
 
 ### 上線後的 production URL
 
@@ -2219,6 +2226,249 @@ Cost:
 ```
 
 **Production 系統 24/7 自動跑** — Beat 每分鐘 trigger analyzer、每 15 分鐘抓 SEC、每天抓 FOMC + earnings。**完全 unattended**。
+
+---
+
+## Milestone 9.5 — Production hardening + analyzer overhaul
+
+> **狀態**:✅ 完成(M9 上線後 ~25 個 commits 的持續演化)
+> **目標**:把 M9 那個「**會跑但預測都是 random**」的 production 升級成「**有結構化上下文 + 真實基準 + 乾淨閉環**」的版本。
+> **為什麼有這個 milestone**:M9 上線後跑了一週,觀察到三個根本問題:(1) LLM 沒有 macro context 在「FOMC 升息」事件出 BULLISH;(2) excess-vs-SPY 對齊邏輯在 SEC 公司事件上產生雜訊(SPY 拿來扣科技股波動沒道理);(3) 大部分 8-K 看 title 看不出實際內容 — analyzer 預測等於亂猜。這節記錄怎麼把這三個一起修。
+>
+> **TL;DR(對照 M5/M6 寫的舊內容)**:
+> - **Prompt v1 → v3.2** — 加 temporal-ordering rule、prior analysis as context、強制 historical anchor
+> - **Predictions 加 `kind` 欄位** — MARKET(對 SPY/QQQ 出方向)vs COMPANY(對個股出方向),routing 也分開
+> - **Alignment 從 excess-return 改 raw-return** — 不再扣 SPY,單看 ticker 真實漲跌
+> - **Outcome windows 從 H1 + H24 + D7 砍成 H24 + D7** — H1 噪訊太大,1 小時內價格還在開盤波動
+> - **8-K / FOMC / Earnings payload 真正下載 body**(Phase A/B/C)— 不只看標題
+> - **加 indicators table + DGS10/DGS2 + multpl PE/CAPE scraper** — 給 analyzer 看「現在 macro 環境怎樣」
+> - **三個 one-shot 維護腳本**:`cleanup_backfill` / `dedupe_predictions` / `purge_legacy`
+> - **SEC adapter LOOKBACK_DAYS 14 → 60** — 防 production gap 漏抓
+
+### 為什麼需要這個階段
+
+M9 上線後第一週的數字:
+
+```
+20 events / 36 predictions / ~30 outcomes
+FRED 56% / SEC 0% / FOMC 25%   ← 對照「擲銅板 50%」
+```
+
+看似有結果,但拆開看每個案例就尷尬:
+- **SEC 0%**:每筆 8-K analyzer 只看到「AMZN 8-K filed 2026-05-22 (items: 5.07)」這種 title — items 5.07 是 shareholder vote,可能漲可能跌,LLM 沒 body 等於亂猜
+- **FRED 56%**:CPI 釋出後 LLM 看到 `value=332.407` 出 BULLISH/BEARISH — 但沒 prior reading,LLM 不知道這是升還降
+- **FOMC 25%**:LLM 不知道現在利率 trajectory(是升息週期還是降息週期),光看「Fed issues statement」幾乎只能 NEUTRAL
+
+問題本質:**M5 的 prompt 設計把 LLM 當 zero-shot oracle,沒餵足夠 context**。M9.5 整段就在補這個。
+
+### Phase 1-5 — Analyzer 大改造(commits `a127719` → `0bbd849`)
+
+#### Phase 1(commit `a127719`):schema 鋪路
+- 新 `indicators` 表 —(ticker, name, value, observed_at)— 讓 macro 指標(PE, CAPE, DGS10/DGS2 殖利率)有地方存
+- `predictions` 加 `kind` 欄位(`MARKET` | `COMPANY`)— 一個 event 可以同時生 MARKET preds(SPY/QQQ)跟 COMPANY preds(AAPL/MSFT/...)
+- `EventType` enum 把 `MACRO_INDICATOR` 改名成 `ECONOMIC_RELEASE`(語意更準)
+
+#### Phase 2(commit `dd4b949`):FRED 多 series + 殖利率
+- FRED adapter 從只抓 CPIAUCSL 擴成抓多個 series(`fred_series` env var 控制)
+- 加 DGS10(10Y treasury)、DGS2(2Y treasury)indicators
+- 給 analyzer 看的 macro context 從「CPI 一個數字」變成「現在 10Y / 2Y 殖利率 + spread」
+
+#### Phase 3(commit `f367325`):FOMC dot plot + multpl scrapers
+- 新 adapter 抓 [https://www.multpl.com](https://www.multpl.com) 的 S&P 500 PE ratio、Shiller CAPE
+- 新 FOMC dot plot HTML adapter — 抓 Summary of Economic Projections,寫進 events
+- 這些都是 macro context 的補充
+
+#### Phase 4(commit `e70924e`):v2 contextual analyzer — **核心轉折**
+- 新 `app/services/context_builder.py` — 對每個 event 組合「最近 30 天的 macro 環境快照」:
+  - 最近 CPI value + change
+  - 最近 DGS10 / DGS2 殖利率
+  - PE / CAPE current value
+  - 最近 N 個相關 events 的 prior analysis(prompt v2 才用得到)
+- Prompt v2 模板 — 餵這個 context block 給 LLM,並且 LLM 要分開出 MARKET prediction(SPY/QQQ)跟 COMPANY prediction(個股)
+- Analyzer 改成寫 N 個 `kind=MARKET` + N 個 `kind=COMPANY` predictions
+
+#### Phase 5(commit `0bbd849`):frontend surface
+- Event detail page 顯示 MARKET vs COMPANY 拆開的預測
+- Macro context box 顯示給用戶看 LLM 看到什麼
+
+**整個 Phase 1-5 的意義**:把 LLM 從「fortune teller」變成「有 prior knowledge 的分析師」。
+
+### Phase A/B/C — Document body 真實下載(commits `c894664` → `58fc074`)
+
+#### Phase A(commit `c894664`):Earnings 加 fundamentals
+- yfinance 拿到 Earnings 後,額外抓 Revenue / Net Income / EBITDA + 計算 YoY growth
+- Payload 從只有 EPS surprise 擴成完整 income statement summary
+- LLM 終於知道「不只 EPS beat,revenue 跟 NI 也 beat → bullish much stronger」
+
+#### Phase B(commit `14e4a7f` + `58fc074`):SEC 8-K body
+- 新 `event_documents` 表 — 存下載完的 filing body(以及 EX-99.1 press release 附件)
+- SEC adapter 抓到 8-K → 排程獨立 task 去下載 `*.htm` body + EX-99.1
+- Analyzer 加 **doc-wait** 邏輯:event 是 8-K 時,如果 documents 還沒下載完,defer analyze(等 5 分鐘)
+- 這是「**defer ≠ fail**」原則的另一個應用 — body 還沒下載完不要硬上 LLM,等等沒關係
+- Event detail page 也顯示 attached documents(commit `58fc074`)
+
+#### Phase C(commit `5772a75`):FOMC statement body
+- FOMC adapter 抓到 statement URL → 下載文本 inline 到 payload
+- Analyzer 看到的不再是「Federal Reserve issues FOMC statement」,而是完整聲明內容
+
+**Phase A/B/C 的共同主題**:**不要相信 title,要看 body**。Title is metadata, body is signal.
+
+### Prompt v3.2(commit `9ca65f0`)— LLM 的最終形態
+
+- **Temporal-ordering rules**:強制 LLM 在 reasoning 裡明確說「過去 X 是因,未來 Y 是果」,不能說「現在的價格反映 future earnings」這種倒果為因的話
+- **Prior analysis as context**:相同 ticker 最近 5 個 events 的 LLM 預測 + outcome 餵進 prompt — LLM 看到「上次我說 BULLISH 結果 ticker 跌了」會調整 confidence
+- **Detailed reasoning**:reasoning 從 1 句話放寬到 5-6 句(M5 的「summary」風格效益太低,prompt v3.2 要看到 thought chain)
+- **Mandatory historical anchor**:CPI/FOMC/earnings 都強制要 reference 一個過去同類事件當錨點(避免 LLM 抽象 reasoning)
+
+### LLM model 升級(commit `8b5f231`)
+
+- Earnings event 也升 premium model(gpt-4o)— spec router 原本只給 FOMC/CPI 升,但 earnings 的 fundamentals body 太重,gpt-4o-mini 抓不到細節
+- 新欄位 `prediction.thesis: Text` — 持久化 LLM 的完整 reasoning(原本只在 log,現在進 DB)
+- 前端加 legend 解釋 BULLISH/BEARISH/NEUTRAL 跟 MARKET/COMPANY 的關係
+
+### Alignment refactor(commit `faeb2d6`)— **最重要的概念翻案**
+
+M5/M6 寫的:**alignment = direction 對上 excess return 的符號**(excess = ticker - SPY)。
+
+問題:
+- 7 個 watchlist 都是科技股 → 跟 QQQ 高度相關,跟 SPY 普通相關
+- SEC 8-K 是公司特有事件 — 用 SPY 當 baseline 在扣什麼?扣不掉 noise,只是把 ticker return 偏移
+- 用戶看「QQQ 漲 2%、ticker 漲 3%、excess 1%」→ 對齊但其實很普通;反過來「SPY 跌 1%、ticker 跌 0.5%、excess 0.5%」→ 對齊但 ticker 真實跌
+
+決策:**alignment 改成只看 raw return 跟方向是否一致**。
+- BULLISH + ticker_return > 0 → aligned
+- BEARISH + ticker_return < 0 → aligned
+- NEUTRAL + `|ticker_return| < 0.5%` → aligned
+
+`prediction_outcomes.spy_return` / `excess_return` 欄位**保留**(可能 dashboard 還想顯示),但 `aligned` 的計算不再用到它們。`alignment.py::is_aligned` 從 `(direction, excess)` 改成 `(direction, ticker_return)`。
+
+**這推翻了 M6 「excess return 是金融 alpha 的標準量測」的論述** — 在我們這個 sample size 跟 watchlist 結構下,raw return 更乾淨。alpha framing 是真的(投資界這樣量測),但對「**LLM 預測對不對**」這個簡單 yes/no question 加了無謂雜訊。
+
+### Outcome windows 改造(commit `462d82e`)
+
+從 H1 + H24 + D7 砍成 **只有 H24 + D7**:
+- H1 噪訊大 — 1 小時內價格主要反映「事件發生時剛好在開盤前 / 開盤後 / 盤中」,跟 LLM 預測對不對沒關係
+- 統計上 H1 outcome 跟 H24 outcome 高度相關 — 重複收集沒新資訊
+- H1 還是 backfill 抓盤前 / 週末資料的災區 — 拿掉省麻煩
+
+Migration 直接 `DELETE FROM prediction_outcomes WHERE window = 'H1'` + 拿掉 enum 那層程式碼。**沒做 backfill** — H1 outcome 本來就沒人看。
+
+### Validator 兩個關鍵 fix
+
+#### 1. Order DESC(commit `94f65c9`)
+- 原 candidates SELECT 是 `ORDER BY predicted_at ASC` — 最早的先做
+- 但 backfill 的 events 可能 predicted_at 比 production price history 還早 → 每次 SELECT 都拿到這些,price lookup deferred,**佔住 batch 額度**
+- 改 DESC → 新 prediction 先做,老的 backfill defer 不影響別人
+- **教訓**:queue ordering 的 default ASC 不是金科玉律 — 看任務特性
+
+#### 2. Split batch evenly across windows(commit `9e9d91a`)
+- 原本 batch_size=50 是「所有 (pred, window) pairs 共享」
+- 結果 H24 pairs 比 D7 多很多(時間早成熟),老是把 50 個額度佔光
+- D7 永遠 starve,沒人 fill
+- 修法:`batch_size / N_windows`,每個 window 自己一個 sub-budget
+- **這就是這個 session 觀察到的 H24=87 vs D7=129 imbalance 的反向**(D7 fill 比 H24 多 — 因為這個 fix 後 D7 有自己保留額度,但 H24 還在受 backfill events 拖累)
+
+### Frontend table fix(commit `20d16bd`)
+
+Outcomes table 原本只顯示「有 outcome 的 row」,看起來就是「7 個 event 都 N/A」。改成三狀態:
+- **Filled** — 有 outcome,顯示數字
+- **Maturing** — predicted_at + window 還沒到,顯示 ⏳
+- **Unavailable** — 過了 deadline 但 price worker 還沒寫,顯示 ✗
+- 三種視覺區隔讓用戶看出「**這是還沒成熟 vs 真的算不出來**」
+
+### Chart fix(commit `7f12553`)
+
+Event detail page 的價格 chart:
+- 公司事件(SEC 8-K, earnings)→ 畫 **company + SPY + QQQ** 三條線
+- Macro 事件(FOMC, CPI)→ 畫 **SPY + QQQ** 兩條
+- 跟 alignment refactor 配套 — chart 還是顯示 benchmark(視覺對比有用),但對齊計算不再用
+
+### Chart anchor fix(commit `be0af76`)
+
+Chart 的 price window 原本 anchor 在 `prediction.predicted_at`(LLM 跑完的時間)— 但 backfill 重跑 LLM,predicted_at 會變最近時間,chart 就跳到 backfill 當天而不是 event 真實發生那天。
+
+修法:anchor 改成 `event.published_at`(事件真實發生時間)— 不管 prediction 何時跑,chart 視覺穩定。
+
+### 三個 one-shot 維護腳本
+
+M9 上線時的腳本只有 `backfill_prices`。M9.5 補了三個處理「**production 狀態管理**」的工具:
+
+#### `app/scripts/cleanup_backfill.py`(commit `3c94083` 加入,session 用過多次)
+- 把所有 ANALYZED 的 events 翻回 FETCHED + 砍掉 v2 outcomes
+- 等 analyzer beat 自動重 analyze + validator 重 fill
+- **用法**:改 prompt 或 schema 之後,想讓 production 用新 prompt 重跑所有 events
+
+#### `app/scripts/dedupe_predictions.py`(commit `acfcdbd`)
+- `ROW_NUMBER() OVER (PARTITION BY event_id, ticker, kind ORDER BY created_at DESC)` 留 newest,砍其他
+- **用法**:cleanup_backfill 跑多次累積出來的重複 v2 preds 清掉
+- 這個 session 跑了一次砍掉 109 個
+
+#### `app/scripts/purge_legacy.py`(commit `faeb2d6` 加入)
+- 砍所有 v1 predictions(cascade outcomes)— alignment 從 excess 改 raw 之後 v1 outcomes 數字邏輯不再對
+- 砍所有 v2 outcomes(predictions 留著,validator refill)
+- **用法**:alignment semantics 改變之後讓 validator 用新邏輯重算
+- 這個 session 跑了一次砍掉 168 個 outcomes
+
+**設計收穫**:**production 修法不該只在程式碼,DB state 也要有對應 migration / one-shot script**。沒有 cleanup_backfill,改 prompt 之後 production 永遠是舊預測 — 系統理論上對但用戶看不到改善。
+
+### SEC adapter LOOKBACK 14 → 60(commit `6d9a9f4`,本 session)
+
+#### 發現問題
+session 中查 production 資料,發現:
+- 系統第一次 ingest 是 2026-06-07
+- SEC adapter `LOOKBACK_DAYS = 14`(spec 當初寫的)→ 只抓 5/24 起的 8-Ks
+- 但實際上 4-5 月有 **18 個 8-Ks**(AAPL/MSFT/GOOGL/AMZN/META/NVDA/TSLA 每家 1-7 個)沒抓到
+- 第一筆 production analyzer 跑的 context 不完整 — LLM 看 recent events 30 天 window 是空的
+
+#### 修法
+`LOOKBACK_DAYS = 60`(留 ~2 個月 headroom,以後再有 deploy gap 也撐得住)。`(source, external_id)` 唯一鍵會 dedup,所以 LOOKBACK 拉長不會重複 insert。
+
+#### 後續處理
+1. Push commit → Railway redeploy
+2. 用 production credentials 跑 `sec_edgar.fetch_new()` once → insert 18 新 8-Ks
+3. 跑 cleanup_backfill 把 51 老 events + 18 新 events 都翻 FETCHED
+4. Analyzer 自動跑完(68 ANALYZED + 1 FAILED)
+5. dedupe_predictions 砍 109 dups(51 老 events 各有 1 舊 + 1 新 v2 preds)
+6. purge_legacy 砍 168 v2 outcomes(讓 validator 用乾淨 preds 重算)
+7. Validator 自動 refill → 216 outcomes(87 H24 + 129 D7)
+
+#### 1 個 FAILED event 沒解
+**MSFT 8-K filed 2026-06-05 (items: 5.02)** — items 5.02 是 Departure/Election of Directors。Analyzer 跑這個 event 失敗,沒留 trace。可能性:
+- LLM 看到 5.02 body 找不到實質方向訊號 → 拋 validation error → mark FAILED
+- 或者 doc-wait 邏輯有 race(body 還沒下載完就被 analyze)
+- 沒影響其他 events;之後可以單獨重 trigger 或忽略
+
+#### H24 vs D7 outcome imbalance 沒解
+session 結束時觀察到:H24=87, D7=129(D7 更多),理論上 H24 應該至少跟 D7 一樣多(24h 比 7d 先成熟)。可能原因:
+- H24 price lookup 卡在 weekend gap(週六/日 publish 的 event 找不到 +24h 的盤中價)
+- 或 validator H24 lookup 對 `must_be_after` 限制太嚴
+- 不影響 dashboard 正確性,但值得後續調查
+
+### 學到的觀念(總集)
+
+1. **LLM context engineering > prompt wording**:M5 寫了個漂亮 prompt 但 LLM 還是 random — 因為它沒看到 macro / prior analysis。後來加 context_builder 比改任何 prompt 字眼都有用
+2. **Alignment metric 不只是數學,是 metric 設計**:excess return 是金融標準但對「LLM 預測對不對」這個簡單問題反而 noise。**選 metric 要看 question type,不是看書上怎麼寫**
+3. **Title is metadata, body is signal**:Phase A/B/C 全在做這件事 — 抓 body
+4. **One-shot scripts 是 production migration 的 first-class citizen**:不只 alembic 才算 migration,DB 狀態變更也要有腳本
+5. **Defer ≠ Fail** 再次驗證:doc-wait 跟 price-missing 都用 defer 處理,沒寫過半成品 outcome
+6. **LOOKBACK / horizon 參數要留 headroom**:M5 寫 14 天當時夠用 — 但沒考慮 deploy gap 跟 backfill 場景。M9.5 改 60 之後彈性大很多
+7. **DESC ordering 對 backfill 重要**:queue ordering ASC 是預設,但「最近事件先處理」對用戶感知更好(老 backfill events 可以慢慢補)
+8. **Migration 之後要驗證 production 真實 state**:M9 上線那天的「20 events / 36 preds」數字 一週後就變了 — 不能只看 deploy log,要定期 query production
+
+### 這個 milestone 跟前面的關係(舊內容哪些過期了)
+
+回去翻 M5/M6 寫的東西,有幾處要記得「**現在不一樣了**」:
+
+- **M5 §測試** — 寫「prompt_version='v1'」,現在 production 是 v3.2
+- **M5 §真實預測範例** — reasoning 寫「significant corporate developments may increase investor confidence」這種空話,v3.2 後 reasoning 是 5-6 句具體分析
+- **M6 §做了什麼** — 寫「excess_return: Float — 預測對不對的判定」,現在 alignment 不再用 excess
+- **M6 §坑 1** — `must_be_after` 對 end-price 還是對,但 SPY end-price 已經不影響 alignment 結果
+- **M6 §學到的觀念 #2** — 「Excess return 是金融 alpha 的標準量測」這句技術上對,但在 EventSense 這個系統脈絡下被 raw return 取代了
+- **M6 §面試 Q5** — 「為什麼 SPY 不 QQQ」這題現在 moot — 都不用了
+- **M6 §真實 outcome 範例** — 那張表有 spy_return / excess 欄位,現在 dashboard 不再用這些欄位算 aligned
+- **M9 §真實 production 表現** — 「20 events / 36 preds」是當時 snapshot,現在(2026-06-09 session 結束)production 是 **69 events / 165 v2 preds / 216 outcomes**
+
+這些舊內容**沒改寫**(歷史紀錄保留),但讀的時候要記得 M9.5 後狀態已經跟 M5/M6 寫的不一樣。
 
 ---
 

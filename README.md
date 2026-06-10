@@ -1,12 +1,37 @@
 # EventSense
 
 A market event analysis platform that tracks structured macro and corporate events from
-official US sources, uses LLMs to forecast their impact on a watchlist of US equities,
-and automatically validates predictions against real price movements.
+official US sources (FRED, SEC EDGAR, FOMC, Yahoo Finance), uses LLMs to forecast their
+impact on a watchlist of US equities, and automatically validates predictions against
+real price movements.
 
-> **Status**: Milestone 1 (Foundation). See [EventSense_Spec.md](EventSense_Spec.md) for
-> the full engineering spec and [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) for the
-> per-milestone implementation notes (繁體中文).
+> **Status**: Milestones 1–9 shipped to production on Railway; M9.5 production
+> hardening complete. M10 (auth + watchlist), M11 (observability), M12 (polish),
+> M13–M14 (AWS migration via Terraform) are not yet started. See
+> [EventSense_Spec.md](EventSense_Spec.md) for the full engineering spec and
+> [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) for per-milestone implementation
+> notes (繁體中文).
+
+---
+
+## Highlights
+
+- **Async backend** — FastAPI 0.115, SQLAlchemy 2.0 async, asyncpg, Pydantic v2.
+- **DB-driven state-machine pipeline** — events flow `FETCHED → ANALYZED → outcomes`
+  via row status, not Celery chains, so worker restarts can't drop state.
+- **Four ingestion adapters** — FRED (macro releases), SEC EDGAR (8-K filings, with
+  document-body download), FOMC (statements + dot plot), Yahoo Finance
+  (prices + earnings + fundamentals).
+- **LLM analysis with typed structured output** — OpenAI + Anthropic through
+  the [`instructor`](https://python.useinstructor.com) library; context-aware
+  prompt (v3.2) injects a 30-day macro snapshot (CPI, treasury yields, S&P 500
+  PE/CAPE) plus prior predictions; separates market-level (SPY/QQQ) from
+  company-level forecasts.
+- **Automated validation loop** — Celery ETA tasks at +24h / +7d compute
+  directional alignment between LLM predictions and realized returns; surfaced
+  per source / per ticker / per window through a Next.js dashboard.
+- **Frontend** — Next.js 16 (App Router) + TypeScript + TanStack Query + Recharts +
+  Tailwind. Timeline of events, event detail with price chart, accuracy dashboard.
 
 ---
 
@@ -14,28 +39,40 @@ and automatically validates predictions against real price movements.
 
 ### Prerequisites
 - Docker Desktop (or OrbStack / Colima)
-- A FRED API key — register at https://fred.stlouisfed.org/docs/api/api_key.html (free)
+- A FRED API key — register at <https://fred.stlouisfed.org/docs/api/api_key.html> (free)
+- An OpenAI **or** Anthropic API key (the analyzer is no-op without one)
 
-### Run
+### Run the backend stack
 
 ```bash
-# 1. Copy env template and fill in your FRED key
+# 1. Copy env template and fill in your keys
 cp backend/.env.example backend/.env
-# edit backend/.env, set FRED_API_KEY=...
+# edit backend/.env, set FRED_API_KEY, OPENAI_API_KEY (or ANTHROPIC_API_KEY),
+# and SEC_USER_AGENT (must contain your email per SEC's fair-access policy)
 
-# 2. Bring up the stack
+# 2. Bring up the stack (postgres + redis + api + worker + analyzer + beat)
 docker compose up --build
 
-# 3. In another terminal, trigger a FRED CPI fetch
+# 3. Browse interactive API docs
+open http://localhost:8000/docs
+
+# 4. Trigger a manual FRED fetch (otherwise beat will pick it up on its schedule)
 curl -X POST http://localhost:8000/api/v1/events/_admin/trigger-fred-cpi
 
-# 4. List the events
+# 5. List events
 curl http://localhost:8000/api/v1/events | jq
 ```
 
-Browse interactive API docs at http://localhost:8000/docs.
+### Run the frontend
 
-### Local development (without Docker)
+```bash
+cd frontend
+npm install
+NEXT_PUBLIC_API_URL=http://localhost:8000 npm run dev
+# open http://localhost:3000
+```
+
+### Local development (no Docker)
 
 Useful for running tests / linters quickly.
 
@@ -48,30 +85,71 @@ uv run ruff format .          # format
 uv run mypy app/              # type check
 ```
 
-For the actual app you still need PostgreSQL + Redis running — easiest is
+For the app itself you still need PostgreSQL + Redis running — easiest is
 `docker compose up postgres redis` and then `uv run uvicorn app.main:app --reload`
 locally.
 
 ---
 
-## Architecture (current)
+## Architecture
 
 ```
-┌──────────────┐     ┌──────────────┐
-│  FastAPI     │ ──→ │  PostgreSQL  │
-│  (port 8000) │     │  (port 5432) │
-└──────┬───────┘     └──────────────┘
-       │
-       │ calls
-       ▼
-┌──────────────┐
-│  FRED API    │
-└──────────────┘
+                        ┌──────────────────┐
+                        │   Celery Beat    │  (schedules only — no I/O)
+                        └────────┬─────────┘
+                                 │ enqueue
+                                 ▼
+              ┌──────────────────────────────────────┐
+              │           Celery Workers              │
+              │  ┌─────────┬─────────────┬─────────┐ │
+              │  │ fetch_q │ analyze_q   │ valid_q │ │
+              │  │ (4)     │ LLM (2)     │ (4)     │ │
+              │  └─────────┴─────────────┴─────────┘ │
+              │    Fetchers     Analyzer    Validator│
+              └─────┬──────────────┬───────────┬─────┘
+                    │              │           │
+                    ▼              ▼           ▼
+            ┌─────────────┐   ┌─────────┐  ┌─────────────┐
+            │ PostgreSQL  │   │  Redis  │  │  yfinance   │
+            │ (source of  │   │ broker  │  │  prices →   │
+            │  truth)     │   │ + cache │  │  outcomes   │
+            └──────┬──────┘   └─────────┘  └─────────────┘
+                   │ read
+                   ▼
+              ┌──────────┐         ┌──────────────────┐
+              │ FastAPI  │ ◀────── │  Next.js (App    │
+              │ REST API │         │  Router) frontend│
+              └──────────┘         └──────────────────┘
 
-Redis is running but not yet exercised (Milestone 2 adds Celery).
+External APIs called from workers:
+  • FRED, SEC EDGAR, FOMC RSS, multpl.com, yfinance
+  • OpenAI / Anthropic (analyzer)
 ```
 
-Full target architecture is documented in [EventSense_Spec.md §4](EventSense_Spec.md).
+Full target architecture and component responsibilities live in
+[EventSense_Spec.md §4](EventSense_Spec.md).
+
+---
+
+## Tech stack
+
+| Layer | Tools |
+|---|---|
+| Language | Python 3.12 |
+| Web framework | FastAPI, Uvicorn |
+| ORM / DB | SQLAlchemy 2.0 (async), asyncpg, PostgreSQL 16, Alembic |
+| Validation / config | Pydantic v2, pydantic-settings |
+| HTTP / retries | httpx, tenacity |
+| Async pipeline | Celery 5, Celery Beat, Redis 7 (broker + cache) |
+| LLM | OpenAI SDK, Anthropic SDK, [instructor](https://python.useinstructor.com) |
+| Scraping | BeautifulSoup4, defusedxml |
+| Market data | yfinance |
+| Logging | structlog |
+| Frontend | Next.js 16 (App Router), TypeScript, TanStack Query, Recharts, Tailwind |
+| Tooling | uv, ruff, mypy (strict), pytest, pytest-asyncio, pre-commit |
+| Container | Docker, Docker Compose |
+| Hosting | Railway (backend + DB + Redis), Vercel (frontend) |
+| CI | GitHub Actions |
 
 ---
 
@@ -79,13 +157,69 @@ Full target architecture is documented in [EventSense_Spec.md §4](EventSense_Sp
 
 ```
 .
-├── backend/         # Python app
-│   ├── app/         # FastAPI + SQLAlchemy code
-│   ├── alembic/     # DB migrations
-│   ├── tests/
+├── backend/                  # Python app
+│   ├── app/
+│   │   ├── adapters/         # FRED, SEC EDGAR, FOMC, yfinance, prices, indicators
+│   │   ├── api/routes/       # events, predictions, accuracy, prices, indicators, health
+│   │   ├── config/           # settings, fred_series, cik_map, watchlist
+│   │   ├── db/               # models, session, Base
+│   │   ├── llm/              # clients, router, schemas
+│   │   ├── prompts/          # event_analysis_v*.txt (versioned)
+│   │   ├── schemas/          # Pydantic request/response models
+│   │   ├── services/         # context_builder, alignment, etc.
+│   │   ├── scripts/          # one-shot maintenance (cleanup, dedupe, purge)
+│   │   ├── tasks/            # Celery tasks (fetcher / analyzer / validator)
+│   │   └── workers/          # Celery app + beat schedule
+│   ├── alembic/              # DB migrations
+│   ├── tests/                # unit + integration
 │   ├── pyproject.toml
-│   └── Dockerfile
+│   ├── Dockerfile
+│   └── Procfile              # Railway entrypoints
+├── frontend/                 # Next.js app
+│   ├── app/                  # Router pages (timeline, /events/[id], /dashboard)
+│   ├── components/           # EventCard, PriceChart, OutcomesTable, etc.
+│   └── lib/                  # typed API client
 ├── docker-compose.yml
-├── EventSense_Spec.md       # Full spec
-└── IMPLEMENTATION_LOG.md    # Per-milestone notes (繁體中文)
+├── EventSense_Spec.md        # Engineering spec
+├── IMPLEMENTATION_LOG.md     # Per-milestone notes (繁體中文)
+├── LEARNING.md               # Deeper concept notes (繁體中文)
+└── DEPLOYMENT.md             # Railway deploy notes
 ```
+
+---
+
+## API surface (read-mostly)
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/v1/events` | Paginated; filter by `source`, `ticker`, `since`, `until` |
+| `GET` | `/api/v1/events/{id}` | Event + predictions + outcomes + attached docs |
+| `GET` | `/api/v1/predictions/{id}` | Single prediction + outcomes |
+| `GET` | `/api/v1/accuracy` | Alignment rates by source / ticker / window |
+| `GET` | `/api/v1/prices/{ticker}` | Snapshots for chart rendering |
+| `GET` | `/api/v1/indicators` | Macro context (CPI, DGS10/DGS2, PE, CAPE) |
+| `GET` | `/api/v1/health` | Liveness check |
+
+Interactive docs: <http://localhost:8000/docs>.
+
+---
+
+## Status & roadmap
+
+| Milestone | Status |
+|---|---|
+| M1 — Foundation | ✅ |
+| M2 — Scheduled fetching | ✅ |
+| M3 — Multi-source ingestion (SEC + FOMC) | ✅ |
+| M4 — Prices + earnings | ✅ |
+| M5 — LLM analysis | ✅ |
+| M6 — Validation loop | ✅ |
+| M7 — Frontend Sprint 1 | ✅ |
+| M8 — Frontend Sprint 2 + CI | ✅ |
+| M9 — Deploy (Railway) | ✅ |
+| M9.5 — Production hardening + analyzer overhaul | ✅ |
+| M10 — Auth + watchlist | ⏳ |
+| M11 — Observability (Prometheus + Grafana) | ⏳ |
+| M12 — Polish + ship | ⏳ |
+| M13 — AWS infrastructure (Terraform) | ⏳ |
+| M14 — AWS application migration + cutover | ⏳ |
