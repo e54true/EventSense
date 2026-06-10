@@ -137,10 +137,11 @@ function HeroSection({
         </p>
       )}
       <p className="mt-3 text-sm text-term-muted max-w-2xl leading-relaxed">
-        Predictions are aligned when the sign of{" "}
-        <code className="font-mono text-term-text/80">excess_return</code>{" "}
-        (ticker minus SPY) matches the predicted direction. NEUTRAL aligns when{" "}
-        <code className="font-mono text-term-text/80">|excess|</code> stays under 0.5%.
+        Predictions are aligned when the raw ticker return matches the
+        predicted direction beyond the window&apos;s neutral band —{" "}
+        <code className="font-mono text-term-text/80">±0.5%</code> at 24h,{" "}
+        <code className="font-mono text-term-text/80">±1.5%</code> at 7d.
+        NEUTRAL aligns when the move stays inside the band.
       </p>
     </section>
   );
@@ -228,6 +229,9 @@ function AccuracyBarChart({
               color: "#d6e0ec",
             }}
             labelStyle={{ color: "#7d8fa5" }}
+            // Bars get their colour from <Cell>, so recharts can't derive an
+            // item text colour and falls back to black — unreadable on dark.
+            itemStyle={{ color: "#d6e0ec" }}
           />
           <Bar dataKey="rate" isAnimationActive={false}>
             {data.map((row) => (
