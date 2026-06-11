@@ -1,8 +1,8 @@
 "use client";
 
-// Accuracy dashboard — aggregate alignment rates sliced by source, window,
-// and model. Each slice is its own /accuracy?... query; recharts renders the
-// breakdown bars.
+// Accuracy dashboard — aggregate alignment rates sliced by kind, source,
+// window, ticker, and model. Each slice is its own /accuracy?... query;
+// recharts renders the breakdown bars.
 
 import { useQueries, useQuery } from "@tanstack/react-query";
 import {
@@ -24,6 +24,10 @@ const SOURCES: EventSource[] = ["FRED", "SEC_EDGAR", "FOMC", "EARNINGS"];
 // 1h dropped — see OutcomesTable.tsx / validator.py for rationale.
 const WINDOWS: OutcomeWindow[] = ["24h", "7d"];
 const KINDS: PredictionKind[] = ["MARKET", "COMPANY"];
+// Models the router has used in production. Bars with no validated outcomes
+// drop out automatically, so listing retired/new models here is harmless —
+// gpt-4o-era bars double as the prompt-v2 cohort vs the gpt-5/v3 cohort.
+const MODELS = ["gpt-4o-mini", "gpt-4o", "gpt-5-mini", "gpt-5"];
 
 export default function DashboardPage() {
   const overall = useQuery({
@@ -78,7 +82,47 @@ export default function DashboardPage() {
           query={(value) => api.getAccuracy({ window: value as OutcomeWindow })}
         />
       </section>
+
+      <section>
+        <SectionHeading
+          title="Accuracy by ticker"
+          hint="— which names does the analyzer read best?"
+        />
+        <TickerAccuracyChart />
+      </section>
+
+      <section>
+        <SectionHeading
+          title="Accuracy by model"
+          hint="— gpt-4o era (prompt v2) vs gpt-5 era (prompt v3)"
+        />
+        <AccuracyBarChart
+          dimension="model"
+          labels={MODELS}
+          query={(value) => api.getAccuracy({ model: value })}
+        />
+      </section>
     </div>
+  );
+}
+
+function TickerAccuracyChart() {
+  // Company tickers come from /events/filters (whatever actually has events,
+  // so newly-added watchlist names appear without a frontend change); SPY/QQQ
+  // are prepended because MARKET predictions target them even though no
+  // event lists them in affected_tickers.
+  const filters = useQuery({
+    queryKey: ["events.filters"],
+    queryFn: () => api.getEventFilters(),
+    staleTime: 5 * 60_000,
+  });
+  const tickers = ["SPY", "QQQ", ...(filters.data?.tickers ?? [])];
+  return (
+    <AccuracyBarChart
+      dimension="ticker"
+      labels={tickers}
+      query={(value) => api.getAccuracy({ ticker: value })}
+    />
   );
 }
 
@@ -164,7 +208,7 @@ function AccuracyBarChart({
   labels,
   query,
 }: {
-  dimension: "source" | "window" | "kind";
+  dimension: "source" | "window" | "kind" | "ticker" | "model";
   labels: string[];
   query: (
     value: string,
