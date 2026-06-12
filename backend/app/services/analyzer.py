@@ -98,11 +98,7 @@ async def _process_one(db: AsyncSession, event: Event, spend_today: float) -> in
     # calls; per-ticker direction is decided by majority vote. Directional
     # majority voting reliably beats a single sample on forecast-style tasks,
     # and high-stakes events are rare enough that N-fold cost stays trivial.
-    n_calls = (
-        settings.analyzer_consensus_calls
-        if choice.model == settings.llm_premium_model
-        else 1
-    )
+    n_calls = settings.analyzer_consensus_calls if choice.model == settings.llm_premium_model else 1
     results: list[clients.LLMCallResult] = []
     last_error: Exception | None = None
     for _ in range(max(1, n_calls)):
@@ -118,15 +114,12 @@ async def _process_one(db: AsyncSession, event: Event, spend_today: float) -> in
 
     if not results:
         event.status = EventStatus.FAILED
-        event.failure_reason = (
-            f"LLM call failed: {type(last_error).__name__}: {last_error}"[:1000]
-        )
+        event.failure_reason = f"LLM call failed: {type(last_error).__name__}: {last_error}"[:1000]
         return 0
 
     analysis = _consensus_analysis([r.analysis for r in results])
     cost = sum(
-        estimate_cost_usd(choice.model, r.prompt_tokens, r.completion_tokens)
-        for r in results
+        estimate_cost_usd(choice.model, r.prompt_tokens, r.completion_tokens) for r in results
     )
     predictions = _build_predictions(event, analysis, choice, cost)
     db.add_all(predictions)

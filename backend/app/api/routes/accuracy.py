@@ -115,9 +115,7 @@ async def get_accuracy(
         if total == 0:
             baselines[name] = None
             continue
-        hits = sum(
-            1 for r in rows if alignment.is_aligned(direction, r.ticker_return, r.window)
-        )
+        hits = sum(1 for r in rows if alignment.is_aligned(direction, r.ticker_return, r.window))
         baselines[name] = hits / total
 
     calibration: list[CalibrationBucket] = []

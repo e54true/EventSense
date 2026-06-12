@@ -49,9 +49,7 @@ async def _run() -> None:
                 effective = direction_7d
             else:
                 effective = direction
-            new_aligned = alignment.is_aligned(
-                effective, outcome.ticker_return, outcome.window
-            )
+            new_aligned = alignment.is_aligned(effective, outcome.ticker_return, outcome.window)
             if new_aligned != outcome.aligned:
                 outcome.aligned = new_aligned
                 flipped += 1

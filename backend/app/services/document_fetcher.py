@@ -44,9 +44,7 @@ _EX99_PATTERN = re.compile(r"^ex(hibit)?[-_.]?99", re.IGNORECASE)
 def _sec_headers() -> dict[str, str]:
     ua = get_settings().sec_user_agent
     if not ua or "@" not in ua:
-        raise RuntimeError(
-            "SEC_USER_AGENT must contain an email for the SEC fair-access policy"
-        )
+        raise RuntimeError("SEC_USER_AGENT must contain an email for the SEC fair-access policy")
     return {"User-Agent": ua, "Accept-Encoding": "gzip, deflate"}
 
 
@@ -89,11 +87,7 @@ async def _list_exhibit_files(client: httpx.AsyncClient, index_url: str) -> list
         logger.warning("doc_fetcher.index_fetch_failed", url=index_url, error=str(exc))
         return []
     items = data.get("directory", {}).get("item", [])
-    return [
-        item["name"]
-        for item in items
-        if "name" in item and _EX99_PATTERN.match(item["name"])
-    ]
+    return [item["name"] for item in items if "name" in item and _EX99_PATTERN.match(item["name"])]
 
 
 async def _persist_document(

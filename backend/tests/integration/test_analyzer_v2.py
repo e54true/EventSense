@@ -98,16 +98,28 @@ async def test_v2_emits_market_and_company_impacts_for_company_event(
 
     impacts = [
         TickerImpact(
-            ticker="SPY", kind="MARKET", direction="BULLISH", magnitude="LOW",
-            confidence=0.55, reasoning="Macro tailwind.",
+            ticker="SPY",
+            kind="MARKET",
+            direction="BULLISH",
+            magnitude="LOW",
+            confidence=0.55,
+            reasoning="Macro tailwind.",
         ),
         TickerImpact(
-            ticker="QQQ", kind="MARKET", direction="BULLISH", magnitude="MEDIUM",
-            confidence=0.6, reasoning="Tech-heavy index reacts to NVDA.",
+            ticker="QQQ",
+            kind="MARKET",
+            direction="BULLISH",
+            magnitude="MEDIUM",
+            confidence=0.6,
+            reasoning="Tech-heavy index reacts to NVDA.",
         ),
         TickerImpact(
-            ticker="NVDA", kind="COMPANY", direction="BULLISH", magnitude="HIGH",
-            confidence=0.75, reasoning="Strong filing.",
+            ticker="NVDA",
+            kind="COMPANY",
+            direction="BULLISH",
+            magnitude="HIGH",
+            confidence=0.75,
+            reasoning="Strong filing.",
         ),
     ]
     with patch(
@@ -117,9 +129,7 @@ async def test_v2_emits_market_and_company_impacts_for_company_event(
         result = await analyze_pending(clean_db, batch_size=10)
 
     assert result["predictions_emitted"] == 3
-    rows = (
-        await clean_db.scalars(select(Prediction).where(Prediction.event_id == event.id))
-    ).all()
+    rows = (await clean_db.scalars(select(Prediction).where(Prediction.event_id == event.id))).all()
     by_ticker = {p.ticker: p for p in rows}
     assert by_ticker["SPY"].kind == PredictionKind.MARKET
     assert by_ticker["QQQ"].kind == PredictionKind.MARKET
@@ -128,18 +138,24 @@ async def test_v2_emits_market_and_company_impacts_for_company_event(
 
 async def test_v2_drops_company_impact_on_macro_event(clean_db: AsyncSession) -> None:
     """CPI release → COMPANY NVDA impact should be rejected (only MARKET allowed)."""
-    await _seed_event(
-        clean_db, source=EventSource.FRED, event_type="CPI_RELEASE", ticker=None
-    )
+    await _seed_event(clean_db, source=EventSource.FRED, event_type="CPI_RELEASE", ticker=None)
 
     impacts = [
         TickerImpact(
-            ticker="SPY", kind="MARKET", direction="BEARISH", magnitude="MEDIUM",
-            confidence=0.6, reasoning="Hot print.",
+            ticker="SPY",
+            kind="MARKET",
+            direction="BEARISH",
+            magnitude="MEDIUM",
+            confidence=0.6,
+            reasoning="Hot print.",
         ),
         TickerImpact(
-            ticker="NVDA", kind="COMPANY", direction="BEARISH", magnitude="MEDIUM",
-            confidence=0.6, reasoning="Should not be allowed.",
+            ticker="NVDA",
+            kind="COMPANY",
+            direction="BEARISH",
+            magnitude="MEDIUM",
+            confidence=0.6,
+            reasoning="Should not be allowed.",
         ),
     ]
     with patch(
@@ -155,17 +171,23 @@ async def test_v2_drops_company_impact_on_macro_event(clean_db: AsyncSession) ->
 
 async def test_v2_drops_market_impact_with_bad_ticker(clean_db: AsyncSession) -> None:
     """kind=MARKET with ticker=NVDA → reject (only SPY/QQQ allowed)."""
-    await _seed_event(
-        clean_db, source=EventSource.FOMC, event_type="FOMC_STATEMENT", ticker=None
-    )
+    await _seed_event(clean_db, source=EventSource.FOMC, event_type="FOMC_STATEMENT", ticker=None)
     impacts = [
         TickerImpact(
-            ticker="NVDA", kind="MARKET", direction="BULLISH", magnitude="LOW",
-            confidence=0.5, reasoning="oops",
+            ticker="NVDA",
+            kind="MARKET",
+            direction="BULLISH",
+            magnitude="LOW",
+            confidence=0.5,
+            reasoning="oops",
         ),
         TickerImpact(
-            ticker="SPY", kind="MARKET", direction="BULLISH", magnitude="LOW",
-            confidence=0.5, reasoning="ok",
+            ticker="SPY",
+            kind="MARKET",
+            direction="BULLISH",
+            magnitude="LOW",
+            confidence=0.5,
+            reasoning="ok",
         ),
     ]
     with patch(
@@ -178,17 +200,23 @@ async def test_v2_drops_market_impact_with_bad_ticker(clean_db: AsyncSession) ->
 
 async def test_v2_drops_company_impact_off_target(clean_db: AsyncSession) -> None:
     """8-K affected=[NVDA] but LLM emits COMPANY AAPL → reject (off-target spillover)."""
-    await _seed_event(
-        clean_db, source=EventSource.SEC_EDGAR, event_type="8K_FILING", ticker="NVDA"
-    )
+    await _seed_event(clean_db, source=EventSource.SEC_EDGAR, event_type="8K_FILING", ticker="NVDA")
     impacts = [
         TickerImpact(
-            ticker="AAPL", kind="COMPANY", direction="BEARISH", magnitude="LOW",
-            confidence=0.4, reasoning="spillover",
+            ticker="AAPL",
+            kind="COMPANY",
+            direction="BEARISH",
+            magnitude="LOW",
+            confidence=0.4,
+            reasoning="spillover",
         ),
         TickerImpact(
-            ticker="NVDA", kind="COMPANY", direction="BULLISH", magnitude="HIGH",
-            confidence=0.8, reasoning="ok",
+            ticker="NVDA",
+            kind="COMPANY",
+            direction="BULLISH",
+            magnitude="HIGH",
+            confidence=0.8,
+            reasoning="ok",
         ),
     ]
     with patch(

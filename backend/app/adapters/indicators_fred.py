@@ -73,9 +73,7 @@ async def fetch_new() -> list[IndicatorObservation]:
     observations: list[IndicatorObservation] = []
     for spec in FRED_INDICATOR_SERIES:
         rows = await _fetch_series_observations(spec.series_id, limit=_OBSERVATION_LIMIT)
-        observations.extend(
-            o for row in rows if (o := _observation_to_indicator(row, spec))
-        )
+        observations.extend(o for row in rows if (o := _observation_to_indicator(row, spec)))
 
     log.info("indicators_fred.fetch.completed", parsed=len(observations))
     return observations

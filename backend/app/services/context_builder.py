@@ -291,9 +291,7 @@ async def _latest_indicator_snapshot(
     )
 
 
-async def _all_latest_indicators(
-    db: AsyncSession, at: datetime
-) -> dict[str, IndicatorSnapshot]:
+async def _all_latest_indicators(db: AsyncSession, at: datetime) -> dict[str, IndicatorSnapshot]:
     """For every indicator_key present in the DB, the freshest snapshot at-or-before `at`."""
     keys_result = await db.scalars(select(Indicator.indicator_key).distinct())
     snapshots: dict[str, IndicatorSnapshot] = {}
@@ -312,9 +310,7 @@ _MARKET_STATE_FETCH_LIMIT = 35
 _TRACK_RECORD_LOOKBACK = timedelta(days=60)
 
 
-async def _market_state_row(
-    db: AsyncSession, ticker: str, at: datetime
-) -> MarketStateRow:
+async def _market_state_row(db: AsyncSession, ticker: str, at: datetime) -> MarketStateRow:
     """Trailing returns + realized vol for one ticker as of `at` (leak-safe)."""
     rows = (
         await db.execute(
@@ -370,14 +366,10 @@ async def _market_state(
     for t in triggering_event.affected_tickers or []:
         if t in watchlist and t not in tickers:
             tickers.append(t)
-    return [
-        await _market_state_row(db, t, triggering_event.published_at) for t in tickers
-    ]
+    return [await _market_state_row(db, t, triggering_event.published_at) for t in tickers]
 
 
-async def _track_record(
-    db: AsyncSession, triggering_event: Event
-) -> list[TrackRecordRow]:
+async def _track_record(db: AsyncSession, triggering_event: Event) -> list[TrackRecordRow]:
     """Aggregate the analyzer's own recent hit rate, sliced by
     (window, kind, direction-as-scored).
 
@@ -422,9 +414,7 @@ async def _track_record(
     ]
 
 
-async def _attached_documents(
-    db: AsyncSession, triggering_event: Event
-) -> list[AttachedDocument]:
+async def _attached_documents(db: AsyncSession, triggering_event: Event) -> list[AttachedDocument]:
     """Pull all event_documents rows for the triggering event, content truncated
     to the per-document prompt cap."""
     rows = (

@@ -64,9 +64,7 @@ async def test_persist_indicators_empty_list_is_noop(
 async def test_persist_indicators_mixed_new_and_existing(
     clean_indicators_db: AsyncSession,
 ) -> None:
-    await persist_indicators(
-        clean_indicators_db, [_obs("DGS10", 4, 4.28), _obs("DGS10", 5, 4.30)]
-    )
+    await persist_indicators(clean_indicators_db, [_obs("DGS10", 4, 4.28), _obs("DGS10", 5, 4.30)])
     second_batch = [
         _obs("DGS10", 5, 4.30),  # dup
         _obs("DGS10", 6, 4.32),  # new

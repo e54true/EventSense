@@ -57,9 +57,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("event_id", "doc_kind", name="uq_event_documents_event_kind"),
     )
-    op.create_index(
-        "ix_event_documents_event", "event_documents", ["event_id"], unique=False
-    )
+    op.create_index("ix_event_documents_event", "event_documents", ["event_id"], unique=False)
 
 
 def downgrade() -> None:

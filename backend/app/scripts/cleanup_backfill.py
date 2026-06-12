@@ -50,17 +50,11 @@ from app.logging_config import configure_logging
 logger = structlog.get_logger(__name__)
 
 
-async def _refresh_earnings_payload(
-    db: AsyncSession, sec_client: httpx.AsyncClient
-) -> int:
+async def _refresh_earnings_payload(db: AsyncSession, sec_client: httpx.AsyncClient) -> int:
     """For each EARNINGS_REPORT event, recompute fundamentals + SEC link
     + Yahoo URL and UPDATE payload. Returns count updated."""
     log = logger.bind(step="refresh_earnings")
-    events = (
-        await db.scalars(
-            select(Event).where(Event.source == EventSource.EARNINGS)
-        )
-    ).all()
+    events = (await db.scalars(select(Event).where(Event.source == EventSource.EARNINGS))).all()
     log.info("found", count=len(events))
 
     # Cache income_stmt per ticker so we don't re-fetch yfinance N times for N quarters.
@@ -76,9 +70,7 @@ async def _refresh_earnings_payload(
         # earnings_history is months-deep.
         rows = _earnings_history_rows(ticker)
         target_date = event.published_at.date()
-        matching_row = next(
-            (r for r in rows if r["report_date"].date() == target_date), None
-        )
+        matching_row = next((r for r in rows if r["report_date"].date() == target_date), None)
         if matching_row is None:
             log.warning(
                 "no_yfinance_row_for_event",
@@ -106,9 +98,7 @@ async def _refresh_earnings_payload(
         if sec_filing is not None:
             new_payload["sec_filing"] = sec_filing
 
-        await db.execute(
-            update(Event).where(Event.id == event.id).values(payload=new_payload)
-        )
+        await db.execute(update(Event).where(Event.id == event.id).values(payload=new_payload))
         updated += 1
         log.info(
             "updated",

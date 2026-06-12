@@ -151,9 +151,7 @@ async def _fetch_series_vintages(series_id: str) -> list[dict[str, Any]]:
     if not settings.fred_api_key:
         raise RuntimeError("FRED_API_KEY not configured")
 
-    observation_start = (
-        datetime.now(UTC) - timedelta(days=_OBSERVATION_LOOKBACK_DAYS)
-    ).date()
+    observation_start = (datetime.now(UTC) - timedelta(days=_OBSERVATION_LOOKBACK_DAYS)).date()
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(
             f"{FRED_API_BASE}/series/observations",
@@ -228,9 +226,7 @@ def _derived_metrics(
         if prev and prev.value > 0:
             derived["mom_pct"] = round((current.value / prev.value - 1) * 100, 2)
         if index >= 2 and releases[index - 2].value > 0 and prev:
-            derived["prev_mom_pct"] = round(
-                (prev.value / releases[index - 2].value - 1) * 100, 2
-            )
+            derived["prev_mom_pct"] = round((prev.value / releases[index - 2].value - 1) * 100, 2)
         if year_ago and year_ago.value > 0:
             derived["yoy_pct"] = round((current.value / year_ago.value - 1) * 100, 2)
     elif spec.event_type == "NFP_RELEASE":
@@ -238,15 +234,11 @@ def _derived_metrics(
         if prev:
             derived["change_thousands"] = round(current.value - prev.value, 1)
         if index >= 2 and prev:
-            derived["prev_change_thousands"] = round(
-                prev.value - releases[index - 2].value, 1
-            )
+            derived["prev_change_thousands"] = round(prev.value - releases[index - 2].value, 1)
     elif spec.event_type == "GDP_RELEASE":
         # GDPC1 is the SAAR level; the headline is QoQ annualized growth.
         if prev and prev.value > 0:
-            derived["qoq_annualized_pct"] = round(
-                ((current.value / prev.value) ** 4 - 1) * 100, 2
-            )
+            derived["qoq_annualized_pct"] = round(((current.value / prev.value) ** 4 - 1) * 100, 2)
         if index >= 2 and prev and releases[index - 2].value > 0:
             derived["prev_qoq_annualized_pct"] = round(
                 ((prev.value / releases[index - 2].value) ** 4 - 1) * 100, 2
@@ -281,9 +273,7 @@ def _published_at_utc(release_date: str) -> datetime:
     return local.astimezone(UTC)
 
 
-def _releases_to_raw_events(
-    spec: FredSeriesSpec, releases: list[FirstRelease]
-) -> list[RawEvent]:
+def _releases_to_raw_events(spec: FredSeriesSpec, releases: list[FirstRelease]) -> list[RawEvent]:
     """Convert first-releases to RawEvents (most recent _MAX_PERIODS only)."""
     events: list[RawEvent] = []
     start = max(0, len(releases) - _MAX_PERIODS)

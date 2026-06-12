@@ -72,9 +72,7 @@ async def list_events(
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     source: EventSource | None = Query(None, description="Filter by event source"),
-    ticker: str | None = Query(
-        None, description="Filter by affected ticker (case-insensitive)"
-    ),
+    ticker: str | None = Query(None, description="Filter by affected ticker (case-insensitive)"),
     event_type: str | None = Query(None, description="Filter by event type"),
     db: AsyncSession = Depends(get_db),
 ) -> EventListResponse:
@@ -98,9 +96,7 @@ async def list_events(
     if event_type is not None:
         conditions.append(Event.event_type == event_type)
 
-    total = (
-        await db.scalar(select(func.count()).select_from(Event).where(*conditions))
-    ) or 0
+    total = (await db.scalar(select(func.count()).select_from(Event).where(*conditions))) or 0
 
     result = await db.scalars(
         select(Event)
@@ -137,9 +133,7 @@ async def get_event_filters(db: AsyncSession = Depends(get_db)) -> EventFiltersR
     event_types = (
         await db.scalars(select(Event.event_type).distinct().order_by(Event.event_type))
     ).all()
-    tickers = (
-        await db.scalars(select(func.unnest(Event.affected_tickers)).distinct())
-    ).all()
+    tickers = (await db.scalars(select(func.unnest(Event.affected_tickers)).distinct())).all()
     return EventFiltersResponse(
         sources=sorted(s.value for s in sources),
         event_types=list(event_types),

@@ -87,9 +87,7 @@ async def test_fetch_new_skips_failed_pages() -> None:
     with patch(
         "app.adapters.indicators_market._fetch_html",
         new=AsyncMock(
-            side_effect=lambda url: _PE_HTML
-            if "pe-ratio" in url
-            else None  # earnings page "fails"
+            side_effect=lambda url: _PE_HTML if "pe-ratio" in url else None  # earnings page "fails"
         ),
     ):
         obs = await fetch_new()

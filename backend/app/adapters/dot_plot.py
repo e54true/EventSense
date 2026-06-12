@@ -102,9 +102,7 @@ def _parse_projection_table(html: str) -> dict[str, Any] | None:
                         return None
                     return {
                         "median": dict(zip(year_labels, cells[1:5], strict=True)),
-                        "central_tendency": dict(
-                            zip(year_labels, cells[5:9], strict=True)
-                        ),
+                        "central_tendency": dict(zip(year_labels, cells[5:9], strict=True)),
                         "range": dict(zip(year_labels, cells[9:13], strict=True)),
                     }
         return None
@@ -151,7 +149,9 @@ async def fetch_new() -> list[RawEvent]:
     # Skip future-dated releases that the calendar page might list pre-emptively.
     today = datetime.now(UTC) + timedelta(days=1)  # +1 day for tz safety
     release_ymds = [
-        ymd for ymd in release_ymds if datetime.strptime(ymd, "%Y%m%d") <= today.replace(tzinfo=None)
+        ymd
+        for ymd in release_ymds
+        if datetime.strptime(ymd, "%Y%m%d") <= today.replace(tzinfo=None)
     ]
 
     events: list[RawEvent] = []

@@ -180,9 +180,7 @@ def _yoy_growth_pct(
         if latest_v is None or prior_v is None or prior_v == 0:
             yoy[f"{metric_key}_yoy_pct"] = None
         else:
-            yoy[f"{metric_key}_yoy_pct"] = round(
-                (latest_v - prior_v) / abs(prior_v) * 100, 2
-            )
+            yoy[f"{metric_key}_yoy_pct"] = round((latest_v - prior_v) / abs(prior_v) * 100, 2)
     return yoy
 
 

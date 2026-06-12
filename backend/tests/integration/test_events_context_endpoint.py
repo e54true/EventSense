@@ -88,13 +88,9 @@ async def _seed_indicator(
 
 async def test_event_detail_returns_context_block(clean_db: AsyncSession) -> None:
     trigger_at = datetime(2026, 6, 1, 14, 30, tzinfo=UTC)
-    trigger = await _seed_event_at(
-        clean_db, external_id="trigger", published_at=trigger_at
-    )
+    trigger = await _seed_event_at(clean_db, external_id="trigger", published_at=trigger_at)
     # A prior event within the 30-day window
-    await _seed_event_at(
-        clean_db, external_id="prior", published_at=trigger_at - timedelta(days=5)
-    )
+    await _seed_event_at(clean_db, external_id="prior", published_at=trigger_at - timedelta(days=5))
     # Indicators: latest + 30d-ago
     await _seed_indicator(
         clean_db, key="DGS10", observed_at=trigger_at - timedelta(days=1), value=4.50

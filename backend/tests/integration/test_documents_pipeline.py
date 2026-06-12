@@ -67,7 +67,7 @@ async def _seed_8k(
             "item_codes": "2.02,9.01",
             "primary_doc_url": (
                 f"https://www.sec.gov/Archives/edgar/data/1045810/"
-                f"{accession.replace('-','')}/nvda-8k.htm"
+                f"{accession.replace('-', '')}/nvda-8k.htm"
             ),
             "company_name": "NVIDIA Corp",
         },
@@ -82,8 +82,12 @@ async def _seed_8k(
     return e
 
 
-_PRIMARY_HTML = "<html><body><div>" + ("Item 2.02 - Earnings Results. " * 30) + "</div></body></html>"
-_EX99_HTML = "<html><body><p>" + ("NVIDIA Reports Q1 Revenue of $81.6 billion. " * 30) + "</p></body></html>"
+_PRIMARY_HTML = (
+    "<html><body><div>" + ("Item 2.02 - Earnings Results. " * 30) + "</div></body></html>"
+)
+_EX99_HTML = (
+    "<html><body><p>" + ("NVIDIA Reports Q1 Revenue of $81.6 billion. " * 30) + "</p></body></html>"
+)
 
 _FAKE_INDEX_JSON = {
     "directory": {
@@ -113,17 +117,21 @@ async def test_fetch_documents_for_8k_persists_cover_and_press_release(
         return ["ex991.htm"]
 
     with (
-        patch("app.services.document_fetcher._fetch_and_strip", new=AsyncMock(side_effect=_fake_fetch_and_strip)),
-        patch("app.services.document_fetcher._list_exhibit_files", new=AsyncMock(side_effect=_fake_list_exhibits)),
+        patch(
+            "app.services.document_fetcher._fetch_and_strip",
+            new=AsyncMock(side_effect=_fake_fetch_and_strip),
+        ),
+        patch(
+            "app.services.document_fetcher._list_exhibit_files",
+            new=AsyncMock(side_effect=_fake_list_exhibits),
+        ),
     ):
         inserted = await fetch_documents_for_event(clean_db, event)
 
     assert inserted == 2
 
     docs = (
-        await clean_db.scalars(
-            select(EventDocument).where(EventDocument.event_id == event.id)
-        )
+        await clean_db.scalars(select(EventDocument).where(EventDocument.event_id == event.id))
     ).all()
     by_kind = {d.doc_kind: d for d in docs}
     assert DocumentKind.FILING_COVER in by_kind

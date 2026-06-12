@@ -83,13 +83,9 @@ async def _seed_indicator(
 async def test_context_includes_only_events_in_lookback_window(
     clean_db: AsyncSession,
 ) -> None:
-    trigger = await _seed_event(
-        clean_db, external_id="trigger", published_at=_TRIGGER_AT
-    )
+    trigger = await _seed_event(clean_db, external_id="trigger", published_at=_TRIGGER_AT)
     # Inside the 30-day window
-    await _seed_event(
-        clean_db, external_id="recent", published_at=_TRIGGER_AT - timedelta(days=5)
-    )
+    await _seed_event(clean_db, external_id="recent", published_at=_TRIGGER_AT - timedelta(days=5))
     # Outside the window (> 30 days ago)
     await _seed_event(
         clean_db, external_id="ancient", published_at=_TRIGGER_AT - timedelta(days=45)
@@ -112,17 +108,23 @@ async def test_context_includes_only_events_in_lookback_window(
 async def test_context_indicator_snapshot_picks_freshest_at_or_before_trigger(
     clean_db: AsyncSession,
 ) -> None:
-    trigger = await _seed_event(
-        clean_db, external_id="trigger", published_at=_TRIGGER_AT
-    )
+    trigger = await _seed_event(clean_db, external_id="trigger", published_at=_TRIGGER_AT)
     # Older value
-    await _seed_indicator(clean_db, key="DGS10", observed_at=_TRIGGER_AT - timedelta(days=35), value=4.10)
+    await _seed_indicator(
+        clean_db, key="DGS10", observed_at=_TRIGGER_AT - timedelta(days=35), value=4.10
+    )
     # 30 days earlier (for delta)
-    await _seed_indicator(clean_db, key="DGS10", observed_at=_TRIGGER_AT - timedelta(days=30), value=4.25)
+    await _seed_indicator(
+        clean_db, key="DGS10", observed_at=_TRIGGER_AT - timedelta(days=30), value=4.25
+    )
     # Latest value within window
-    await _seed_indicator(clean_db, key="DGS10", observed_at=_TRIGGER_AT - timedelta(days=1), value=4.50)
+    await _seed_indicator(
+        clean_db, key="DGS10", observed_at=_TRIGGER_AT - timedelta(days=1), value=4.50
+    )
     # Future value (after trigger) — should be ignored
-    await _seed_indicator(clean_db, key="DGS10", observed_at=_TRIGGER_AT + timedelta(days=1), value=9.99)
+    await _seed_indicator(
+        clean_db, key="DGS10", observed_at=_TRIGGER_AT + timedelta(days=1), value=9.99
+    )
 
     ctx = await build_context(
         clean_db,
@@ -141,11 +143,11 @@ async def test_context_indicator_snapshot_picks_freshest_at_or_before_trigger(
 async def test_context_indicator_without_prior_window_value_returns_none_delta(
     clean_db: AsyncSession,
 ) -> None:
-    trigger = await _seed_event(
-        clean_db, external_id="trigger", published_at=_TRIGGER_AT
-    )
+    trigger = await _seed_event(clean_db, external_id="trigger", published_at=_TRIGGER_AT)
     # Only one observation — no prior available for delta
-    await _seed_indicator(clean_db, key="SP500_PE", observed_at=_TRIGGER_AT - timedelta(days=1), value=31.83)
+    await _seed_indicator(
+        clean_db, key="SP500_PE", observed_at=_TRIGGER_AT - timedelta(days=1), value=31.83
+    )
 
     ctx = await build_context(
         clean_db,
@@ -163,9 +165,7 @@ async def test_context_indicator_without_prior_window_value_returns_none_delta(
 
 async def test_context_respects_recent_events_cap(clean_db: AsyncSession) -> None:
     """If cap=3, only 3 newest events show up."""
-    trigger = await _seed_event(
-        clean_db, external_id="trigger", published_at=_TRIGGER_AT
-    )
+    trigger = await _seed_event(clean_db, external_id="trigger", published_at=_TRIGGER_AT)
     for i in range(10):
         await _seed_event(
             clean_db,
@@ -195,9 +195,7 @@ async def test_context_includes_prior_predictions_with_leak_safe_outcomes(
     past_at = trigger_at - timedelta(days=5)
 
     # Seed a past event + a prediction on it
-    past_event = await _seed_event(
-        clean_db, external_id="past", published_at=past_at
-    )
+    past_event = await _seed_event(clean_db, external_id="past", published_at=past_at)
     pred = Prediction(
         event_id=past_event.id,
         ticker="NVDA",
@@ -244,9 +242,7 @@ async def test_context_includes_prior_predictions_with_leak_safe_outcomes(
     await clean_db.commit()
 
     # Triggering event AFTER the past event
-    trigger = await _seed_event(
-        clean_db, external_id="trigger", published_at=trigger_at
-    )
+    trigger = await _seed_event(clean_db, external_id="trigger", published_at=trigger_at)
 
     ctx = await build_context(
         clean_db,

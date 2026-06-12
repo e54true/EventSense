@@ -204,9 +204,7 @@ def _render_track_record_table(rows: list[Any]) -> str:
         direction = r.direction.value if hasattr(r.direction, "value") else str(r.direction)
         rate = f"{r.aligned / r.total:.0%}" if r.total else "n/a"
         note = " (small n)" if r.total < 5 else ""
-        lines.append(
-            f"{window} | {kind} | {direction} | {r.aligned}/{r.total} | {rate}{note}"
-        )
+        lines.append(f"{window} | {kind} | {direction} | {r.aligned}/{r.total} | {rate}{note}")
     return "\n".join(lines)
 
 
@@ -322,9 +320,7 @@ def _render_recent_events_table(events: list[Any]) -> str:
         return "(no recent events in window)"
     blocks: list[str] = []
     for e in events:
-        lines = [
-            f"[{e.published_at.date().isoformat()} | {e.source} | {e.event_type}] {e.title}"
-        ]
+        lines = [f"[{e.published_at.date().isoformat()} | {e.source} | {e.event_type}] {e.title}"]
         highlight = _recent_event_highlight(e)
         if highlight:
             lines.append(f"  {highlight}")
