@@ -6,10 +6,10 @@ impact on a watchlist of US equities, and automatically validates predictions ag
 real price movements.
 
 > **Status**: Milestones 1–9 shipped to production on Railway; M9.5 production
-> hardening and M9.6 accuracy overhaul (release-date anchoring, per-window
-> scoring, prompt v3 + consensus voting, terminal UI) complete. M10 (auth +
-> watchlist), M11 (observability), M12 (polish), M13–M14 (AWS migration via
-> Terraform) are not yet started. See
+> hardening, M9.6 accuracy overhaul (release-date anchoring, per-window
+> scoring, prompt v3 + consensus voting, terminal UI), and M9.7 simulated
+> trading P&L complete. M10 (auth + watchlist), M11 (observability), M12
+> (polish), M13–M14 (AWS migration via Terraform) are not yet started. See
 > [EventSense_Spec.md](EventSense_Spec.md) for the full engineering spec and
 > [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) for per-milestone implementation
 > notes (繁體中文).
@@ -39,6 +39,11 @@ real price movements.
   (±0.5% / ±1.5%); `/accuracy` reports rates alongside constant-strategy
   baselines (always-bullish/bearish/neutral) and a confidence-bucket
   calibration table.
+- **Simulated trading P&L** — `/pnl` turns every validated call into a
+  $100 paper trade (BULLISH long, BEARISH short, NEUTRAL stand-aside) and
+  reports cumulative P&L, return on deployed capital, win rate, an equity
+  curve, and an always-long-SPY same-stakes benchmark — accuracy translated
+  into dollars, recomputed live as new outcomes validate.
 - **Frontend** — Next.js 16 (App Router) + TypeScript + TanStack Query + Recharts +
   Tailwind, in a Bloomberg-terminal-inspired dark theme. Infinite-scroll
   timeline with source / ticker / type filters, event detail with price chart,
@@ -208,6 +213,7 @@ Full target architecture and component responsibilities live in
 | `GET` | `/api/v1/events/{id}` | Event + predictions + outcomes + context + attached docs |
 | `GET` | `/api/v1/predictions/{id}` | Single prediction + outcomes |
 | `GET` | `/api/v1/accuracy` | Alignment rates by source / ticker / window / kind / model, plus constant-strategy baselines and confidence calibration |
+| `GET` | `/api/v1/pnl` | Simulated P&L of staking $100 on every directional call (long/short), with equity curve, SPY same-stakes benchmark, and breakdowns by window / model / ticker / confidence |
 | `GET` | `/api/v1/prices/{ticker}` | Snapshots for chart rendering |
 | `GET` | `/api/v1/indicators` | Macro context (CPI, DGS10/DGS2, PE, CAPE) |
 | `GET` | `/api/v1/health` | Liveness check |
@@ -231,6 +237,7 @@ Interactive docs: <http://localhost:8000/docs>.
 | M9 — Deploy (Railway) | ✅ |
 | M9.5 — Production hardening + analyzer overhaul | ✅ |
 | M9.6 — Accuracy overhaul (release-date anchoring, per-window scoring, prompt v3 + consensus) + terminal UI | ✅ |
+| M9.7 — Simulated trading P&L (`/pnl` + dashboard panel) | ✅ |
 | M10 — Auth + watchlist | ⏳ |
 | M11 — Observability (Prometheus + Grafana) | ⏳ |
 | M12 — Polish + ship | ⏳ |

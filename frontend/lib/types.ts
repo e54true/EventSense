@@ -175,3 +175,80 @@ export interface AccuracyResponse {
     kind: PredictionKind | null;
   };
 }
+
+// --- /pnl — simulated fixed-stake trading P&L ---
+// Money fields are USD; *_pct fields are fractions (0.0123 = +1.23%).
+
+export interface PnlStats {
+  trades: number;
+  neutral_skipped: number;
+  invested_usd: number;
+  pnl_usd: number;
+  return_pct: number | null;
+  wins: number;
+  losses: number;
+  win_rate: number | null;
+  // Same stakes, always long SPY — "what if I'd just bought the index".
+  spy_pnl_usd: number;
+  spy_return_pct: number | null;
+}
+
+export interface WeightedPnl {
+  invested_usd: number;
+  pnl_usd: number;
+  return_pct: number | null;
+}
+
+export interface GroupPnl {
+  label: string;
+  trades: number;
+  invested_usd: number;
+  pnl_usd: number;
+  return_pct: number | null;
+  win_rate: number | null;
+}
+
+export interface PnlTrade {
+  ticker: string;
+  window: OutcomeWindow;
+  direction: PredictionDirection;
+  confidence: number;
+  model: string;
+  event_title: string;
+  entered_at: string; // ISO 8601
+  exited_at: string;
+  ticker_return: number;
+  pnl_usd: number;
+}
+
+export interface EquityPoint {
+  t: string; // ISO 8601 — nominal exit time of the trade
+  pnl_usd: number; // cumulative strategy P&L
+  spy_pnl_usd: number; // cumulative always-long-SPY benchmark
+  ticker: string;
+  window: OutcomeWindow;
+  direction: PredictionDirection;
+  trade_pnl_usd: number;
+}
+
+export interface PnlResponse {
+  stake_usd: number;
+  total: PnlStats;
+  weighted: WeightedPnl;
+  by_window: GroupPnl[];
+  by_model: GroupPnl[];
+  by_ticker: GroupPnl[];
+  by_confidence: GroupPnl[];
+  equity_curve: EquityPoint[];
+  best_trade: PnlTrade | null;
+  worst_trade: PnlTrade | null;
+  period_start: string | null;
+  period_end: string | null;
+  filters: {
+    source: EventSource | null;
+    ticker: string | null;
+    window: OutcomeWindow | null;
+    model: string | null;
+    kind: PredictionKind | null;
+  };
+}

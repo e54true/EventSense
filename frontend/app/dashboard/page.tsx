@@ -17,6 +17,7 @@ import {
 } from "recharts";
 
 import { MacroContextPanel } from "@/components/MacroContextPanel";
+import { PnlPanel } from "@/components/PnlPanel";
 import { api } from "@/lib/api";
 import type { EventSource, OutcomeWindow, PredictionKind } from "@/lib/types";
 
@@ -46,6 +47,14 @@ export default function DashboardPage() {
         total={overall.data?.total_outcomes}
         baselines={overall.data?.baselines}
       />
+
+      <section>
+        <SectionHeading
+          title="Simulated P&L"
+          hint="— $100 on every directional call, from the first event onward"
+        />
+        <PnlPanel />
+      </section>
 
       <MacroContextPanel
         title="Current macro state"

@@ -13,6 +13,7 @@ import type {
   EventSource,
   IndicatorsLatestResponse,
   OutcomeWindow,
+  PnlResponse,
   PredictionKind,
   PriceRangeResponse,
 } from "./types";
@@ -95,6 +96,25 @@ export const api = {
 
   getIndicatorsLatest: (): Promise<IndicatorsLatestResponse> =>
     request(`/api/v1/indicators/latest`),
+
+  getPnl: (filters?: {
+    source?: EventSource;
+    ticker?: string;
+    window?: OutcomeWindow;
+    model?: string;
+    kind?: PredictionKind;
+    stake_usd?: number;
+  }): Promise<PnlResponse> => {
+    const params = new URLSearchParams();
+    if (filters?.source) params.set("source", filters.source);
+    if (filters?.ticker) params.set("ticker", filters.ticker);
+    if (filters?.window) params.set("window", filters.window);
+    if (filters?.model) params.set("model", filters.model);
+    if (filters?.kind) params.set("kind", filters.kind);
+    if (filters?.stake_usd) params.set("stake_usd", String(filters.stake_usd));
+    const qs = params.toString();
+    return request(`/api/v1/pnl${qs ? `?${qs}` : ""}`);
+  },
 };
 
 export { APIError };

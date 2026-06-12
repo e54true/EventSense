@@ -237,3 +237,45 @@ async def test_price_range_404_for_unknown_ticker(
         },
     )
     assert response.status_code == 404
+
+
+# --- /pnl ---
+
+
+async def test_pnl_simulates_seeded_outcome(seeded_db: AsyncSession, client: AsyncClient) -> None:
+    """Seeded outcome: BULLISH AAPL, 24h, ticker_return +1.11%, spy +0.5% →
+    one $100 long worth +$1.11, SPY benchmark +$0.50."""
+    body = (await client.get("/api/v1/pnl")).json()
+    assert body["stake_usd"] == 100.0
+    assert body["total"]["trades"] == 1
+    assert body["total"]["neutral_skipped"] == 0
+    assert body["total"]["invested_usd"] == pytest.approx(100.0)
+    assert body["total"]["pnl_usd"] == pytest.approx(1.11)
+    assert body["total"]["return_pct"] == pytest.approx(0.0111)
+    assert body["total"]["spy_pnl_usd"] == pytest.approx(0.5)
+    assert len(body["equity_curve"]) == 1
+    point = body["equity_curve"][0]
+    assert point["ticker"] == "AAPL"
+    assert point["pnl_usd"] == pytest.approx(1.11)
+    assert body["best_trade"]["ticker"] == "AAPL"
+    assert body["best_trade"]["direction"] == "BULLISH"
+    windows = {g["label"]: g for g in body["by_window"]}
+    assert windows["24h"]["trades"] == 1
+    assert windows["7d"]["trades"] == 0
+
+
+async def test_pnl_respects_stake_param(seeded_db: AsyncSession, client: AsyncClient) -> None:
+    body = (await client.get("/api/v1/pnl?stake_usd=1000")).json()
+    assert body["total"]["pnl_usd"] == pytest.approx(11.1)
+    assert body["total"]["return_pct"] == pytest.approx(0.0111)
+
+
+async def test_pnl_empty_filter_returns_zero_state(
+    seeded_db: AsyncSession, client: AsyncClient
+) -> None:
+    body = (await client.get("/api/v1/pnl?ticker=NOTHING")).json()
+    assert body["total"]["trades"] == 0
+    assert body["total"]["return_pct"] is None
+    assert body["equity_curve"] == []
+    assert body["best_trade"] is None
+    assert body["filters"]["ticker"] == "NOTHING"
