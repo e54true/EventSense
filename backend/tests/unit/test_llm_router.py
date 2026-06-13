@@ -63,3 +63,15 @@ def test_8k_filing_remains_default_model() -> None:
     item-code filings well enough."""
     choice = choose_model(EventSource.SEC_EDGAR, "8K_FILING", today_spend_usd=0.0)
     assert choice.model == "gpt-4o-mini"
+
+
+def test_fed_testimony_is_high_stakes() -> None:
+    """Congressional testimony is prepared + market-moving → premium model."""
+    choice = choose_model(EventSource.FOMC, "FED_TESTIMONY", today_spend_usd=0.0)
+    assert choice.model == "gpt-4o"
+
+
+def test_fed_speech_remains_default_model() -> None:
+    """Routine speeches stay on the default model — only testimony escalates."""
+    choice = choose_model(EventSource.FOMC, "FED_SPEECH", today_spend_usd=0.0)
+    assert choice.model == "gpt-4o-mini"

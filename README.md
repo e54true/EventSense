@@ -7,9 +7,10 @@ real price movements.
 
 > **Status**: Milestones 1–9 shipped to production on Railway; M9.5 production
 > hardening, M9.6 accuracy overhaul (release-date anchoring, per-window
-> scoring, prompt v3 + consensus voting, terminal UI), and M9.7 simulated
-> trading P&L complete. M10 (auth + watchlist), M11 (observability), M12
-> (polish), M13–M14 (AWS migration via Terraform) are not yet started. See
+> scoring, prompt v3 + consensus voting, terminal UI), M9.7 simulated
+> trading P&L, and M9.8 Fed speeches/testimony ingestion complete. M10 (auth +
+> watchlist), M11 (observability), M12 (polish), M13–M14 (AWS migration via
+> Terraform) are not yet started. See
 > [EventSense_Spec.md](EventSense_Spec.md) for the full engineering spec and
 > [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) for per-milestone implementation
 > notes (繁體中文).
@@ -21,12 +22,14 @@ real price movements.
 - **Async backend** — FastAPI 0.115, SQLAlchemy 2.0 async, asyncpg, Pydantic v2.
 - **DB-driven state-machine pipeline** — events flow `FETCHED → ANALYZED → outcomes`
   via row status, not Celery chains, so worker restarts can't drop state.
-- **Four ingestion adapters** — FRED (macro releases in ALFRED vintage mode —
+- **Ingestion adapters** — FRED (macro releases in ALFRED vintage mode —
   events anchor on the true first-release date and carry derived surprise
   metrics like CPI MoM/YoY and NFP payroll change), SEC EDGAR (8-K filings,
-  with document-body download), FOMC (statements + dot plot), Yahoo Finance
-  (prices + earnings + fundamentals). Top-10 US companies watchlist; late
-  additions track forward-only (no history backfill).
+  with document-body download), FOMC (statements + dot plot + Fed
+  speeches/testimony from the Board RSS feeds, with speaker/role extraction
+  and body download), Yahoo Finance (prices + earnings + fundamentals).
+  Top-10 US companies watchlist; late additions track forward-only (no
+  history backfill).
 - **LLM analysis with typed structured output** — OpenAI + Anthropic through
   the [`instructor`](https://python.useinstructor.com) library; context-aware
   prompt (v3) injects macro indicators, trailing market state
@@ -238,6 +241,7 @@ Interactive docs: <http://localhost:8000/docs>.
 | M9.5 — Production hardening + analyzer overhaul | ✅ |
 | M9.6 — Accuracy overhaul (release-date anchoring, per-window scoring, prompt v3 + consensus) + terminal UI | ✅ |
 | M9.7 — Simulated trading P&L (`/pnl` + dashboard panel) | ✅ |
+| M9.8 — Fed speeches + testimony ingestion (Board RSS feeds) | ✅ |
 | M10 — Auth + watchlist | ⏳ |
 | M11 — Observability (Prometheus + Grafana) | ⏳ |
 | M12 — Polish + ship | ⏳ |

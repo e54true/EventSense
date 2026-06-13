@@ -37,6 +37,10 @@ _HIGH_STAKES_EVENT_TYPES: frozenset[tuple[EventSource, str]] = frozenset(
     {
         (EventSource.FOMC, "FOMC_STATEMENT"),
         (EventSource.FOMC, "DOT_PLOT_RELEASE"),  # SEP — quarterly forward guidance signal
+        # Congressional testimony (Humphrey-Hawkins etc.) is prepared, rare
+        # (~8/yr), and reliably market-moving — same tier as a rate decision.
+        # Routine speeches (FED_SPEECH) stay on the default model by omission.
+        (EventSource.FOMC, "FED_TESTIMONY"),
         # Macro prints that move the whole curve and SPY. LLM nuance on the
         # dovish/hawkish lean of each release is worth the premium model price.
         (EventSource.FRED, "CPI_RELEASE"),

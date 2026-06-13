@@ -198,6 +198,48 @@ async def test_v2_drops_market_impact_with_bad_ticker(clean_db: AsyncSession) ->
     assert result["predictions_emitted"] == 1
 
 
+async def test_v2_fed_speech_routes_market_only(clean_db: AsyncSession) -> None:
+    """FED_SPEECH is a macro event_type (not in _COMPANY_EVENT_TYPES), so it
+    behaves exactly like FOMC/CPI: MARKET SPY/QQQ survive, COMPANY NVDA dropped.
+    Locks in the "new Fed event_types need no analyzer change" guarantee."""
+    await _seed_event(clean_db, source=EventSource.FOMC, event_type="FED_SPEECH", ticker=None)
+    impacts = [
+        TickerImpact(
+            ticker="SPY",
+            kind="MARKET",
+            direction="BULLISH",
+            magnitude="MEDIUM",
+            confidence=0.6,
+            reasoning="Dovish lean.",
+        ),
+        TickerImpact(
+            ticker="QQQ",
+            kind="MARKET",
+            direction="BULLISH",
+            magnitude="MEDIUM",
+            confidence=0.6,
+            reasoning="Rate-sensitive tech.",
+        ),
+        TickerImpact(
+            ticker="NVDA",
+            kind="COMPANY",
+            direction="BULLISH",
+            magnitude="HIGH",
+            confidence=0.7,
+            reasoning="Should be dropped — speeches are macro.",
+        ),
+    ]
+    with patch(
+        "app.services.analyzer.clients.analyze_event",
+        new=AsyncMock(return_value=_wrap(impacts)),
+    ):
+        result = await analyze_pending(clean_db, batch_size=10)
+
+    assert result["predictions_emitted"] == 2  # SPY + QQQ only
+    tickers = {p.ticker for p in (await clean_db.scalars(select(Prediction))).all()}
+    assert tickers == {"SPY", "QQQ"}
+
+
 async def test_v2_drops_company_impact_off_target(clean_db: AsyncSession) -> None:
     """8-K affected=[NVDA] but LLM emits COMPANY AAPL → reject (off-target spillover)."""
     await _seed_event(clean_db, source=EventSource.SEC_EDGAR, event_type="8K_FILING", ticker="NVDA")
