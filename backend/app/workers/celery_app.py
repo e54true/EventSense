@@ -121,15 +121,6 @@ celery_app.conf.beat_schedule = {
         # days but that's left for a future milestone.
         "schedule": crontab(hour=14, minute=30),  # 2:30 PM UTC
     },
-    "fed-speeches-twice-daily": {
-        "task": "app.tasks.fetchers.fetch_fed_speeches_task",
-        # Board speeches/testimony publish during US business hours. Two polls
-        # (~10:00 and 20:00 UTC) catch morning + late-day remarks. published_at
-        # is the feed pubDate, so poll timing never shifts the validator anchor —
-        # cadence only affects how fast a speech enters the analyze queue. The
-        # (source, external_id) dedup makes repeat polls free no-ops.
-        "schedule": crontab(hour="10,20", minute=15),
-    },
     "earnings-daily": {
         "task": "app.tasks.fetchers.fetch_earnings_task",
         # Most earnings drop after market close (~4:30 PM ET = 20:30 UTC winter / 21:30 summer).

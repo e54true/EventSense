@@ -264,14 +264,6 @@ def _recent_event_highlight(event: Any) -> str:
             parts = [f"{yr}={v}" for yr, v in median.items()]
             return "fed funds rate median — " + ", ".join(parts)
         return ""
-    if et in ("FED_SPEECH", "FED_TESTIMONY"):
-        # Speaker + a body snippet so a prior Fed remark in the lookback table
-        # reads as more than a title (e.g. a hawkish Powell speech days before
-        # a CPI print). Body falls back to the feed description.
-        speaker = p.get("speaker") or ""
-        body = p.get("body") or p.get("description") or ""
-        snippet = " ".join(body.split())[:_RECENT_EVENT_BODY_CHARS]
-        return f"{speaker}: {snippet}".strip(": ").strip() if (speaker or snippet) else ""
     if et == "8K_FILING":
         ticker = p.get("ticker", "")
         items = p.get("item_codes", "")

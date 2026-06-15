@@ -89,14 +89,6 @@ class Settings(BaseSettings):
     # picked the premium model, so routine 8-Ks never multiply cost.
     analyzer_consensus_calls: int = Field(default=3)
 
-    # --- Fed speeches/testimony ingestion ---
-    # Which Fed Board speakers to ingest from the speeches/testimony feeds:
-    #   "all"        — every Board official (Chair / Vice Chair / Governors) [default]
-    #   "principals" — Chair + Vice Chair only
-    #   "chair"      — Chair only
-    # Env-overridable (FED_SPEAKER_SCOPE) so scope can narrow without a redeploy.
-    fed_speaker_scope: Literal["all", "principals", "chair"] = Field(default="all")
-
 
 @lru_cache
 def get_settings() -> Settings:

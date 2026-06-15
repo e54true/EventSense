@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 import structlog
 
-from app.adapters import dot_plot, earnings, fed_speeches, fomc, fred, sec_edgar
+from app.adapters import dot_plot, earnings, fomc, fred, sec_edgar
 from app.db.session import transient_session
 from app.schemas.raw_event import RawEvent
 from app.services.event_writer import persist_events
@@ -65,11 +65,6 @@ def fetch_sec_edgar_task() -> dict[str, int]:
 @celery_app.task(name="app.tasks.fetchers.fetch_fomc_task", **_common_task_kwargs)
 def fetch_fomc_task() -> dict[str, int]:
     return _run_fetch("fomc", fomc.fetch_new)
-
-
-@celery_app.task(name="app.tasks.fetchers.fetch_fed_speeches_task", **_common_task_kwargs)
-def fetch_fed_speeches_task() -> dict[str, int]:
-    return _run_fetch("fed_speeches", fed_speeches.fetch_new)
 
 
 # Earnings doesn't get autoretry_for=HTTPError because yfinance never raises
