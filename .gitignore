@@ -47,3 +47,4 @@ out/
 *.tfstate.backup
 *.tfvars
 !*.tfvars.example
+.learning-audit-findings.json

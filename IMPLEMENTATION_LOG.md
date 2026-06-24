@@ -2660,10 +2660,36 @@ _(待實作)_
 
 ## Milestone 11 — Observability
 
-> **狀態**:⏳ 未開始
-> **目標**:Prometheus metrics、Grafana dashboard。
+> **狀態**:✅ 完成(2026-06-15 單一 session)
+> **目標**:Prometheus metrics + Grafana dashboard,把「系統現在健康嗎、pipeline 在動嗎、預測準不準、今天 LLM 花了多少」變成可觀測的儀表板。
+>
+> **TL;DR**:三層 metrics,全跑在本機 docker-compose 的 `observability` profile(零雲端花費):
+> - **HTTP(RED metrics)** — `prometheus-fastapi-instrumentator` 掛 ASGI middleware,自動產 per-(method, handler, status) 的 request count / latency histogram / in-progress。
+> - **Domain(業務狀態)** — 自訂 gauges 反映 pipeline funnel(events by source × status)、prediction 量、各 outcome window 的方向準確率、今日 LLM 花費 vs 上限。**在 scrape 當下查 Postgres**(10s TTL 快取),不在程式路徑塞 counter。
+> - **Celery(背景 pipeline)** — `danihodovic/celery-exporter` 容器聽 broker 的 task 事件流,產 per-task 的 throughput / failures / runtime。worker 加 `-E`、celery conf 開 `worker_send_task_events` + `task_send_sent_event`。
+> - **`GET /metrics`** 自訂成 async route(不用 instrumentator 的 `.expose()`),先 await domain refresh 再 `generate_latest()`。
+> - **Prometheus + Grafana 容器** 全自動 provision:datasource + 「EventSense — Overview」dashboard(12 panel:請求率/錯誤率/p50-95-99 延遲/各 handler 請求率/Celery 成功+失敗/事件漏斗/各窗準確率/今日花費 vs 上限)開箱即用。
 
-_(待實作)_
+### 設計決策
+
+**為什麼 domain metrics 用「scrape 時查 DB」而不是在程式裡 increment counter?** analyzer / validator 跑在 Celery worker,跟服務 `/metrics` 的 API 是**不同 process**。在那邊 increment 的 counter 這邊看不到。改成從**共同的真相來源(Postgres)**現查 gauge,直接繞過跨 process 聚合——DB 是每個 process 本來就都同意的那一份狀態。代價是每次 scrape 幾條 aggregate query,用 10s TTL 快取壓住。
+
+**為什麼 `/metrics` 自己手寫而非 `.expose()`?** instrumentator 的 `.expose()` 註冊的是同步 route;我要 async 才能在序列化 registry 前 `await refresh_domain_metrics()`。所以只用 `.instrument(app)` 掛 middleware,route 自己定義。
+
+**為什麼 metrics 不重算 P&L?** P&L 已有專屬 endpoint + dashboard panel(M9.7),domain gauge 聚焦「pipeline 健康 + 準確率 + 預算」這條最有故事的線,不重複。
+
+**為什麼 `refresh_domain_metrics` 吞所有 DB 例外?** metrics 端點絕不能 500——DB 短暫不可達時寧可回「舊但合法」的數字、讓 HTTP metrics 繼續流,也不要讓 Prometheus 記一次 scrape failure 還順帶讓抓不到任何 metric。
+
+**為什麼用 profile 隔離?** 平常 `docker compose up` 保持精簡;要看儀表板才 `--profile observability up`。Grafana 開 3001(3000 給前端)。
+
+### 驗證(本機 docker 全鏈路實測)
+
+- [x] `/metrics` 端點:HTTP histogram + domain gauges + cap=5.0 都出得來;**真實本機 DB 資料**(events by source/status、predictions=154、outcomes、accuracy、今日花費)
+- [x] Prometheus **三個 target 全 UP**(backend / celery-exporter / prometheus self),PromQL 查得到 `eventsense_*` 與 `http_requests_total`
+- [x] Grafana healthy、datasource(uid `eventsense-prom`)+ 「EventSense — Overview」dashboard 自動 provision
+- [x] **Celery metrics 實測**:短暫起 worker+beat(**刻意不起 analyzer**,fetcher 只打免費 API),celery-exporter 收到真實 `celery_task_sent_total` / `celery_task_succeeded_total` per task name、`celery_worker_up=1`;`analyze_pending_task` 有 sent 但無 succeeded → 確認沒消費、**沒花到 OpenAI**
+- [x] 2 個 metrics 單元測試(端點回 200 + DB 不可達時 graceful);ruff + mypy(strict)0 error
+- [ ] 尚未 push;prod(Railway)backend 已自帶 `/metrics`,要不要外接 hosted Prometheus/Grafana 留待之後。**注意**:`/metrics` 在 prod 要靠網路層(security group / Railway private networking)鎖,不在 app 層擋。
 
 ---
 
@@ -2678,10 +2704,35 @@ _(待實作)_
 
 ## Milestone 13 — AWS Infrastructure as Code
 
-> **狀態**:⏳ 未開始
-> **目標**:用 Terraform 在 AWS 建好 VPC + ECS + RDS + ElastiCache + ALB(尚未部署 app)。
+> **狀態**:✅ 完成(2026-06-15 單一 session)— IaC 已寫 + `terraform validate` 通過,**刻意不 apply**(真正建資源/搬資料/cutover 是 M14)。當前 AWS 花費 **$0**。
+> **目標**:用 Terraform 把 Railway 的 production 拓撲重寫成 AWS primitives,講得出 PaaS→IaaS 的 trade-off。檔案在 [`infra/aws/`](infra/aws/)。
+>
+> **TL;DR**:
+> - **一個 image、四個 ECS Fargate service**(`local.services` map + `for_each` 驅動 task def / service / log group),完全對應 Railway「一份 Dockerfile、靠 start command 區分」的模型。`dynamic "load_balancer"` 只掛 `backend`,Celery 三隻無 listener。
+> - **手刻 VPC**(不用社群 module,每個網路決策都看得見):2 AZ、public/private subnet、單一 NAT GW;ECS/RDS/Redis 全在 private subnet,只有 ALB 對外。
+> - **least-privilege SG 鏈**:internet→ALB(80/443)→ECS(8000)→RDS(5432)/Redis(6379),層層只收前一層的 SG。
+> - **Secrets Manager** 存所有機敏值,透過 task def 的 `secrets` block 注入(valueFrom = secret ARN)——這是相對 Railway 明文 env 的具體安全升級。`DATABASE_URL`/`REDIS_URL` 由 RDS/ElastiCache 屬性在 Terraform 內組出來,不手抄。
+> - **RDS** PostgreSQL 16(db.t4g.micro 單 AZ)、**ElastiCache** Redis 7(單節點)、**ECR**(單 repo + 保留 10 版的 lifecycle policy)、**ALB**(:80,健康檢查打 `/api/v1/health`)、IAM execution/task role、per-service CloudWatch log group、cluster 開 Container Insights(呼應 M11)。
+> - 13 個 `.tf` + `terraform.tfvars.example` + README(含成本表與 prod-hardening backlog)。
 
-_(待實作)_
+### 設計決策
+
+**為什麼 M13 不 apply?** 照 milestone 切法,M13 = 把 IaC 寫對、`validate` 過;M14 才是真 `apply` + 資料遷移 + DNS cutover。不 apply = 不開任何資源 = $0,也不碰本機沒有的 AWS 憑證。`terraform validate`(語法/型別/引用正確性)是無憑證下可達的最高驗證標準;`plan`/`apply` 要憑證 + 取消註解 S3 backend,留 M14。
+
+**為什麼 `for_each` 一張 map 而不是四段 copy-paste?** 四個 service 只差 `command` / cpu / memory / 是否掛 LB。一張 `local.services` map 驅動 task def + service + log group,加一隻或改大小是一行的事——也順便展示 Terraform 的 `for_each` + `dynamic` block 熟練度。
+
+**為什麼 DB 密碼字元集限制成 URL-safe?** 密碼會被嵌進 `DATABASE_URL` secret,所以 `random_password` 排除有 URL 意義的 `: @ / ? # &`,免得組出來的連線字串被切壞。
+
+**成本的誠實面(這就是 trade-off 本身)**:同一套 workload,**Railway ~$15/月 vs AWS ~$150/月(約 10 倍)**。大頭是 Fargate 24/7(~$67)+ NAT GW(~$33)+ ALB(~$18)。**搬上 AWS 不是為了省錢**,是換 VPC 隔離 / IAM / multi-AZ 選項 / 水平擴展 / 「infra 即可審查的程式碼」——這些 PaaS 幫你抽象掉了。side-project 成本上 PaaS 完勝;AWS 版的價值是展示能力、以及當隔離/規模真的需要時已經 ready。
+
+**刻意精簡(prod-hardening backlog,每項都是一個旋鈕)**:RDS 單 AZ、單一 NAT、只有 HTTP listener(無 ACM/443)、無 autoscaling、`skip_final_snapshot=true`、egress 走 NAT 而非 VPC endpoints。README 全列出來。
+
+### 驗收狀態
+
+- [x] `terraform fmt -recursive` 乾淨、`terraform init -backend=false` + `terraform validate` → **Success! The configuration is valid.**
+- [x] 13 個資源檔涵蓋 VPC/SG/ECR/RDS/ElastiCache/Secrets/IAM/ALB/ECS/Logs/outputs,`for_each` + `dynamic` LB block + Secrets 注入到位
+- [x] README 含資源對照表(Railway↔AWS)、本機 validate 步驟、成本表、精簡項清單
+- [ ] 尚未 `apply`(= M14:取消 S3 backend 註解、填 secrets、`terraform apply`、ECR push image、資料遷移、DNS cutover)
 
 ---
 

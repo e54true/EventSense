@@ -8,8 +8,10 @@ real price movements.
 > **Status**: Milestones 1–9 shipped to production on Railway; M9.5 production
 > hardening, M9.6 accuracy overhaul (release-date anchoring, per-window
 > scoring, prompt v3 + consensus voting, terminal UI), and M9.7 simulated
-> trading P&L complete. M10 (auth + watchlist), M11 (observability), M12
-> (polish), M13–M14 (AWS migration via Terraform) are not yet started. See
+> trading P&L complete. M11 (observability — Prometheus + Grafana, local) and
+> M13 (AWS IaC — Terraform, authored + validated, not applied) are also done.
+> M10 (auth + watchlist), M12 (polish), and M14 (AWS apply + cutover) are not
+> yet started. See
 > [EventSense_Spec.md](EventSense_Spec.md) for the full engineering spec and
 > [IMPLEMENTATION_LOG.md](IMPLEMENTATION_LOG.md) for per-milestone implementation
 > notes (繁體中文).
@@ -239,7 +241,7 @@ Interactive docs: <http://localhost:8000/docs>.
 | M9.6 — Accuracy overhaul (release-date anchoring, per-window scoring, prompt v3 + consensus) + terminal UI | ✅ |
 | M9.7 — Simulated trading P&L (`/pnl` + dashboard panel) | ✅ |
 | M10 — Auth + watchlist | ⏳ |
-| M11 — Observability (Prometheus + Grafana) | ⏳ |
+| M11 — Observability (Prometheus + Grafana) | ✅ |
 | M12 — Polish + ship | ⏳ |
-| M13 — AWS infrastructure (Terraform) | ⏳ |
+| M13 — AWS infrastructure (Terraform, validated / not applied) | ✅ |
 | M14 — AWS application migration + cutover | ⏳ |
