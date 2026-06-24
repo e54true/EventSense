@@ -1,0 +1,11 @@
+# Copy to terraform.tfvars (gitignored) and fill in before `terraform apply`.
+# Secrets can also be supplied via TF_VAR_<name> env vars instead of this file.
+
+region      = "ap-northeast-1"
+environment = "production"
+image_tag   = "latest" # set to a git SHA in CI for immutable deploys
+
+# Secrets — DO NOT commit real values.
+openai_api_key = ""
+fred_api_key   = ""
+sec_user_agent = "EventSense your-email@example.com"

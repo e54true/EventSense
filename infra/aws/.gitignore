@@ -1,0 +1,9 @@
+# Terraform — never commit state (may contain secrets) or local provider cache.
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+crash.log
+# Real variable files (the .example is committed; the filled-in one is not).
+terraform.tfvars
+*.auto.tfvars
