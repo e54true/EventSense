@@ -1,0 +1,28 @@
+# Prometheus scrape config for the local EventSense observability stack
+# (Milestone 11). Brought up with: docker compose --profile observability up
+#
+# Three scrape jobs map to the three metric layers:
+#   - backend          → HTTP RED metrics + domain gauges (app /metrics)
+#   - celery-exporter  → Celery task throughput / failures / runtime
+#   - prometheus       → self-monitoring (scrape health)
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: backend
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["backend:8000"]
+        labels:
+          service: eventsense-backend
+
+  - job_name: celery
+    static_configs:
+      - targets: ["celery-exporter:9808"]
+        labels:
+          service: eventsense-celery
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

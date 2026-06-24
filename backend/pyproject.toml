@@ -35,6 +35,11 @@ dependencies = [
     "openai>=1.55.0",
     "anthropic>=0.40.0",
     "instructor>=1.7.0",
+    # Observability (Milestone 11). prometheus-client gives the registry +
+    # metric types; the instrumentator wires per-request HTTP histograms into
+    # the ASGI middleware so we don't hand-roll latency/count/in-progress metrics.
+    "prometheus-client>=0.21.0",
+    "prometheus-fastapi-instrumentator>=7.0.0",
 ]
 
 [dependency-groups]

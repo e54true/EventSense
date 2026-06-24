@@ -61,6 +61,13 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     # Result expiry: we don't actually consume task results, just need them for retries.
     result_expires=3600,
+    # Observability (Milestone 11): emit task-lifecycle events on the broker so
+    # the out-of-process celery-exporter can scrape throughput / failures /
+    # runtime per task. `task_send_sent_event` adds the task-sent event (queued
+    # but not yet picked up) which lets us see queue latency. Workers must also
+    # start with `-E`; see docker-compose. Negligible overhead at our task rate.
+    worker_send_task_events=True,
+    task_send_sent_event=True,
 )
 
 # Route tasks to dedicated queues so a slow LLM call doesn't block a quick FRED fetch.

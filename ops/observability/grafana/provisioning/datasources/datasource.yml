@@ -1,0 +1,12 @@
+# Auto-provision the Prometheus datasource so Grafana boots ready-to-use
+# (no click-through setup). Referenced by dashboards via uid "eventsense-prom".
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: eventsense-prom
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

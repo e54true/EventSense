@@ -83,7 +83,9 @@ services:
     # Listens to fetch_queue + validate_queue. Both are IO-bound (HTTP / DB),
     # safe to share concurrency budget. analyze_queue stays isolated on its
     # own worker so slow LLM calls don't starve quick fetchers/validators.
-    command: celery -A app.workers.celery_app worker --loglevel=info -Q fetch_queue,validate_queue --concurrency=4
+    # -E sends task-lifecycle events to the broker so celery-exporter (M11) can
+    # scrape per-task throughput / failures / runtime.
+    command: celery -A app.workers.celery_app worker --loglevel=info -E -Q fetch_queue,validate_queue --concurrency=4
 
   analyzer:
     build:
@@ -107,7 +109,7 @@ services:
         condition: service_started
     # Dedicated worker on analyze_queue. Concurrency=2 — LLM APIs have per-org
     # rate limits, and concurrent calls also burn budget faster than we'd like.
-    command: celery -A app.workers.celery_app worker --loglevel=info -Q analyze_queue --concurrency=2
+    command: celery -A app.workers.celery_app worker --loglevel=info -E -Q analyze_queue --concurrency=2
 
   beat:
     build:
@@ -128,5 +130,59 @@ services:
     # Beat must run as a single replica — two beats would double-enqueue every schedule.
     command: celery -A app.workers.celery_app beat --loglevel=info
 
+  # --- Observability stack (Milestone 11) -----------------------------------
+  # Opt-in via profile so a plain `docker compose up` stays lean. Bring up with:
+  #   docker compose --profile observability up -d
+  # Then: Prometheus → http://localhost:9090, Grafana → http://localhost:3001
+  # (admin/admin). The EventSense Overview dashboard is auto-provisioned.
+
+  celery-exporter:
+    image: danihodovic/celery-exporter:0.12.2
+    profiles: ["observability"]
+    environment:
+      # Listen to the same broker the workers emit task events on.
+      CE_BROKER_URL: redis://redis:6379/0
+    ports:
+      - "9808:9808"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    profiles: ["observability"]
+    volumes:
+      - ./ops/observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    ports:
+      - "9090:9090"
+    depends_on:
+      - backend
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    profiles: ["observability"]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # Dashboards live in source control; users edit copies, not the originals.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./ops/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ops/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    # 3001 on the host — 3000 is taken by the Next.js frontend in local dev.
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+
 volumes:
   postgres_data:
+  prometheus_data:
+  grafana_data:
