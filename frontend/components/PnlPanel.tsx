@@ -245,17 +245,17 @@ export function PnlPanel() {
           (total.sharpe_annualized ?? total.sharpe_ratio ?? 0) > 0 ? "border-l-term-up" : "border-l-term-down"
         }`}>
           <div className="font-mono text-[10px] font-bold tracking-widest uppercase text-term-amber">
-            Sharpe ratio (annualized)
+            Sharpe ratio (per-trade)
           </div>
           <div className="mt-1 flex items-baseline gap-1.5">
             <span className={`font-mono text-2xl font-bold tabular-nums ${
-              total.sharpe_annualized === null ? "text-term-muted"
-              : total.sharpe_annualized > 0 ? "text-term-up" : "text-term-down"
+              total.sharpe_ratio === null ? "text-term-muted"
+              : total.sharpe_ratio > 0 ? "text-term-up" : "text-term-down"
             }`}>
-              {total.sharpe_annualized !== null ? total.sharpe_annualized.toFixed(2) : "—"}
+              {total.sharpe_ratio !== null ? total.sharpe_ratio.toFixed(2) : "—"}
             </span>
             <span className="font-mono text-[10px] text-term-dim tabular-nums">
-              per-trade {total.sharpe_ratio !== null ? total.sharpe_ratio.toFixed(2) : "—"}
+              per-trade · annualized {total.sharpe_annualized !== null ? total.sharpe_annualized.toFixed(1) : "—"}
             </span>
           </div>
         </div>
