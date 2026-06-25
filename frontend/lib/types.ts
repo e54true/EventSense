@@ -192,6 +192,7 @@ export interface PnlStats {
   spy_pnl_usd: number;
   spy_return_pct: number | null;
   sharpe_ratio: number | null;
+  sharpe_annualized: number | null;
   mdd_usd: number;
   mdd_pct: number | null;
 }

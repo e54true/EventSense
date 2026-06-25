@@ -242,19 +242,21 @@ export function PnlPanel() {
       {/* Risk metrics */}
       <div className="grid grid-cols-2 gap-3">
         <div className={`border border-term-border border-l-2 bg-term-panel p-3 ${
-          total.sharpe_ratio !== null && total.sharpe_ratio > 0 ? "border-l-term-up" : "border-l-term-down"
+          (total.sharpe_annualized ?? total.sharpe_ratio ?? 0) > 0 ? "border-l-term-up" : "border-l-term-down"
         }`}>
           <div className="font-mono text-[10px] font-bold tracking-widest uppercase text-term-amber">
-            Sharpe ratio
+            Sharpe ratio (annualized)
           </div>
           <div className="mt-1 flex items-baseline gap-1.5">
             <span className={`font-mono text-2xl font-bold tabular-nums ${
-              total.sharpe_ratio === null ? "text-term-muted"
-              : total.sharpe_ratio > 0 ? "text-term-up" : "text-term-down"
+              total.sharpe_annualized === null ? "text-term-muted"
+              : total.sharpe_annualized > 0 ? "text-term-up" : "text-term-down"
             }`}>
-              {total.sharpe_ratio === null ? "—" : total.sharpe_ratio.toFixed(2)}
+              {total.sharpe_annualized !== null ? total.sharpe_annualized.toFixed(2) : "—"}
             </span>
-            <span className="font-mono text-[10px] text-term-dim">per-trade · no annualization</span>
+            <span className="font-mono text-[10px] text-term-dim tabular-nums">
+              per-trade {total.sharpe_ratio !== null ? total.sharpe_ratio.toFixed(2) : "—"}
+            </span>
           </div>
         </div>
         <div className="border border-term-border border-l-2 border-l-term-down bg-term-panel p-3">
@@ -262,11 +264,11 @@ export function PnlPanel() {
             Max drawdown
           </div>
           <div className="mt-1 flex items-baseline gap-1.5">
-            <span className={`font-mono text-2xl font-bold tabular-nums ${total.mdd_usd > 0 ? "text-term-down" : "text-term-muted"}`}>
-              {total.mdd_usd > 0 ? `-$${total.mdd_usd.toFixed(2)}` : "$0.00"}
+            <span className={`font-mono text-2xl font-bold tabular-nums ${total.mdd_pct ? "text-term-down" : "text-term-muted"}`}>
+              {total.mdd_pct !== null ? `${(total.mdd_pct * 100).toFixed(1)}%` : "0.0%"}
             </span>
             <span className="font-mono text-[10px] text-term-dim tabular-nums">
-              {total.mdd_pct !== null ? `${(total.mdd_pct * 100).toFixed(1)}% of peak` : "—"}
+              {total.mdd_usd > 0 ? `-$${total.mdd_usd.toFixed(2)} of peak` : "no drawdown"}
             </span>
           </div>
         </div>

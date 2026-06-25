@@ -115,6 +115,21 @@ def _sharpe(per_trade_returns: list[float]) -> float | None:
     return (mean / std) if std > 0 else None
 
 
+def _sharpe_annualized(
+    per_trade_sharpe: float | None,
+    executed: list[_Executed],
+) -> float | None:
+    if per_trade_sharpe is None or len(executed) < 2:
+        return None
+    span_days = (
+        executed[-1].exited_at - executed[0].entered_at
+    ).total_seconds() / 86_400
+    if span_days <= 0:
+        return None
+    trades_per_year = len(executed) / (span_days / 365.25)
+    return per_trade_sharpe * (trades_per_year ** 0.5)
+
+
 def _max_drawdown(executed: list[_Executed]) -> tuple[float, float | None]:
     cum = peak = max_dd = 0.0
     for t in executed:
@@ -135,6 +150,7 @@ def _stats(executed: list[_Executed], neutral_skipped: int, stake_usd: float) ->
     losses = sum(1 for t in executed if t.pnl < 0)
     per_trade_returns = [t.pnl / stake_usd for t in executed]
     mdd_usd, mdd_pct = _max_drawdown(executed)
+    sharpe = _sharpe(per_trade_returns)
     return PnlStats(
         trades=len(executed),
         neutral_skipped=neutral_skipped,
@@ -146,7 +162,8 @@ def _stats(executed: list[_Executed], neutral_skipped: int, stake_usd: float) ->
         win_rate=_ratio(wins, len(executed)),
         spy_pnl_usd=spy_pnl,
         spy_return_pct=_ratio(spy_pnl, invested),
-        sharpe_ratio=_sharpe(per_trade_returns),
+        sharpe_ratio=sharpe,
+        sharpe_annualized=_sharpe_annualized(sharpe, executed),
         mdd_usd=mdd_usd,
         mdd_pct=mdd_pct,
     )
