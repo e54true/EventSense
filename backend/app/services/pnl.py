@@ -105,12 +105,36 @@ def _ratio(numerator: float, denominator: float) -> float | None:
     return (numerator / denominator) if denominator > 0 else None
 
 
+def _sharpe(per_trade_returns: list[float]) -> float | None:
+    n = len(per_trade_returns)
+    if n < 2:
+        return None
+    mean = sum(per_trade_returns) / n
+    variance = sum((r - mean) ** 2 for r in per_trade_returns) / (n - 1)
+    std = variance ** 0.5
+    return (mean / std) if std > 0 else None
+
+
+def _max_drawdown(executed: list[_Executed]) -> tuple[float, float | None]:
+    cum = peak = max_dd = 0.0
+    for t in executed:
+        cum += t.pnl
+        if cum > peak:
+            peak = cum
+        dd = peak - cum
+        if dd > max_dd:
+            max_dd = dd
+    return max_dd, (max_dd / peak if peak > 0 else None)
+
+
 def _stats(executed: list[_Executed], neutral_skipped: int, stake_usd: float) -> PnlStats:
     invested = stake_usd * len(executed)
     pnl = sum(t.pnl for t in executed)
     spy_pnl = sum(t.spy_pnl for t in executed)
     wins = sum(1 for t in executed if t.pnl > 0)
     losses = sum(1 for t in executed if t.pnl < 0)
+    per_trade_returns = [t.pnl / stake_usd for t in executed]
+    mdd_usd, mdd_pct = _max_drawdown(executed)
     return PnlStats(
         trades=len(executed),
         neutral_skipped=neutral_skipped,
@@ -122,6 +146,9 @@ def _stats(executed: list[_Executed], neutral_skipped: int, stake_usd: float) ->
         win_rate=_ratio(wins, len(executed)),
         spy_pnl_usd=spy_pnl,
         spy_return_pct=_ratio(spy_pnl, invested),
+        sharpe_ratio=_sharpe(per_trade_returns),
+        mdd_usd=mdd_usd,
+        mdd_pct=mdd_pct,
     )
 
 

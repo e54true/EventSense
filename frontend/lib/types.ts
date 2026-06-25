@@ -191,6 +191,9 @@ export interface PnlStats {
   // Same stakes, always long SPY — "what if I'd just bought the index".
   spy_pnl_usd: number;
   spy_return_pct: number | null;
+  sharpe_ratio: number | null;
+  mdd_usd: number;
+  mdd_pct: number | null;
 }
 
 export interface WeightedPnl {

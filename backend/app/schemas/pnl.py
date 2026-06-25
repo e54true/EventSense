@@ -29,6 +29,10 @@ class PnlStats(BaseModel):
     # the model — "what if I'd just bought the index each time".
     spy_pnl_usd: float
     spy_return_pct: float | None
+    # Risk metrics
+    sharpe_ratio: float | None  # mean(per-trade return) / std, no annualization
+    mdd_usd: float              # max drawdown in USD (0 if equity never dips below a peak)
+    mdd_pct: float | None       # max drawdown as fraction of peak (None if peak <= 0)
 
 
 class WeightedPnl(BaseModel):

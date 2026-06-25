@@ -10,3 +10,19 @@ datasources:
     url: http://prometheus:9090
     isDefault: true
     editable: false
+
+  - name: PostgreSQL
+    uid: eventsense-pg
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    database: eventsense
+    user: eventsense
+    secureJsonData:
+      password: eventsense
+    jsonData:
+      sslmode: disable
+      postgresVersion: 1600
+      timescaledb: false
+    isDefault: false
+    editable: false

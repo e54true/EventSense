@@ -153,6 +153,138 @@
         { "refId": "A", "legendFormat": "spent", "expr": "eventsense_llm_cost_today_usd", "datasource": { "type": "prometheus", "uid": "eventsense-prom" } },
         { "refId": "B", "legendFormat": "cap", "expr": "eventsense_llm_cost_cap_usd", "datasource": { "type": "prometheus", "uid": "eventsense-prom" } }
       ]
+    },
+
+    {
+      "type": "row",
+      "title": "Historical (PostgreSQL)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 31 },
+      "id": 13,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Total LLM Spend (all time)",
+      "id": 14,
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 32 },
+      "datasource": { "type": "postgres", "uid": "eventsense-pg" },
+      "fieldConfig": {
+        "defaults": { "unit": "currencyUSD", "decimals": 4, "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 10 }, { "color": "red", "value": 50 }] } },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["last"] }, "colorMode": "value", "graphMode": "none", "textMode": "value_and_name" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "eventsense-pg" },
+          "editorMode": "code", "format": "table", "rawQuery": true,
+          "rawSql": "SELECT ROUND(SUM(llm_cost_usd)::numeric, 4) AS \"Total Spent\"\nFROM predictions",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Total Predictions (all time)",
+      "id": 15,
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 32 },
+      "datasource": { "type": "postgres", "uid": "eventsense-pg" },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "decimals": 0, "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] } },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["last"] }, "colorMode": "value", "graphMode": "none", "textMode": "value_and_name" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "eventsense-pg" },
+          "editorMode": "code", "format": "table", "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) AS \"Total Predictions\"\nFROM predictions",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Avg Cost per Prediction",
+      "id": 16,
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 32 },
+      "datasource": { "type": "postgres", "uid": "eventsense-pg" },
+      "fieldConfig": {
+        "defaults": { "unit": "currencyUSD", "decimals": 4, "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.1 }, { "color": "red", "value": 0.5 }] } },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["last"] }, "colorMode": "value", "graphMode": "none", "textMode": "value_and_name" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "eventsense-pg" },
+          "editorMode": "code", "format": "table", "rawQuery": true,
+          "rawSql": "SELECT ROUND((SUM(llm_cost_usd) / NULLIF(COUNT(*), 0))::numeric, 4) AS \"Avg Cost / Prediction\"\nFROM predictions",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Daily LLM Spend (USD)",
+      "id": 17,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 36 },
+      "datasource": { "type": "postgres", "uid": "eventsense-pg" },
+      "fieldConfig": {
+        "defaults": { "unit": "currencyUSD", "custom": { "drawStyle": "bars", "fillOpacity": 80, "lineWidth": 0 } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "eventsense-pg" },
+          "editorMode": "code", "format": "time_series", "rawQuery": true,
+          "rawSql": "SELECT\n  DATE_TRUNC('day', predicted_at) AS time,\n  SUM(llm_cost_usd) AS \"Cost (USD)\"\nFROM predictions\nWHERE predicted_at > NOW() - INTERVAL '2 years'\nGROUP BY 1\nORDER BY 1",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Daily Prediction Count",
+      "id": 18,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 36 },
+      "datasource": { "type": "postgres", "uid": "eventsense-pg" },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "decimals": 0, "custom": { "drawStyle": "bars", "fillOpacity": 80, "lineWidth": 0 } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "eventsense-pg" },
+          "editorMode": "code", "format": "time_series", "rawQuery": true,
+          "rawSql": "SELECT\n  DATE_TRUNC('day', predicted_at) AS time,\n  COUNT(*) AS \"Predictions\"\nFROM predictions\nWHERE predicted_at > NOW() - INTERVAL '2 years'\nGROUP BY 1\nORDER BY 1",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Cost Breakdown by Date",
+      "id": 19,
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 44 },
+      "datasource": { "type": "postgres", "uid": "eventsense-pg" },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Cost (USD)" }, "properties": [{ "id": "unit", "value": "currencyUSD" }, { "id": "decimals", "value": 4 }] },
+          { "matcher": { "id": "byName", "options": "Avg Cost/Prediction" }, "properties": [{ "id": "unit", "value": "currencyUSD" }, { "id": "decimals", "value": 4 }] }
+        ]
+      },
+      "options": { "sortBy": [{ "desc": true, "displayName": "Date" }] },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "eventsense-pg" },
+          "editorMode": "code", "format": "table", "rawQuery": true,
+          "rawSql": "SELECT\n  DATE(predicted_at) AS \"Date\",\n  COUNT(*) AS \"Predictions\",\n  ROUND(SUM(llm_cost_usd)::numeric, 4) AS \"Cost (USD)\",\n  ROUND((SUM(llm_cost_usd) / NULLIF(COUNT(*), 0))::numeric, 4) AS \"Avg Cost/Prediction\"\nFROM predictions\nGROUP BY DATE(predicted_at)\nORDER BY DATE(predicted_at) DESC\nLIMIT 60",
+          "refId": "A"
+        }
+      ]
     }
   ]
 }
